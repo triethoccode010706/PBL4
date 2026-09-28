@@ -9,9 +9,12 @@
 
   <ItemGroup>
     <Folder Include="Application\" />
-    <Folder Include="Infrastructure\" />
     <Folder Include="Domain\" />
     <Folder Include="Protocol\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Shared.csproj" />
   </ItemGroup>
 
 </Project>
