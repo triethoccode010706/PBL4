@@ -1,114 +1,129 @@
-﻿using System;
-using System.Net.Sockets;
-using System.Threading.Tasks;
+﻿using System.Net.Sockets;
 
 namespace Client.Infrastructure
 {
     public class TcpClientService : ITcpClient
     {
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly object _sync = new();
         private TcpClient? _client;
         private NetworkStream? _stream;
-        private bool _isConnected;
+        private volatile bool _isConnected;
 
         public bool IsConnected => _isConnected;
 
-        public async Task<bool> ConnectAsync(string serverIp, int port)
+        public Stream Stream =>
+            _stream ?? throw new InvalidOperationException("Chưa kết nối tới Server.");
+
+        public async Task<bool> ConnectAsync(
+            string serverIp,
+            int port,
+            CancellationToken cancellationToken = default)
         {
+            Disconnect();
+
+            TcpClient? client = null;
             try
             {
-               
-                _client = new TcpClient();
+                client = new TcpClient();
+                await client.ConnectAsync(serverIp, port, cancellationToken);
 
-                // Kết nối tới server
-                await _client.ConnectAsync(serverIp, port);
+                lock (_sync)
+                {
+                    _client = client;
+                    _stream = client.GetStream();
+                    _isConnected = true;
+                }
 
-                // Lấy NetworkStream để gửi/nhận dữ liệu
-                _stream = _client.GetStream();
-
-                _isConnected = true;
-
-                Console.WriteLine(
-                    $"[TcpClientService] Đã kết nối thành công tới Server {serverIp}:{port}");
-
+                Console.WriteLine($"[TcpClientService] Đã kết nối {serverIp}:{port}");
                 return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"[TcpClientService Error] Không thể kết nối: {ex.Message}");
+                Console.WriteLine($"[TcpClientService] Không thể kết nối: {ex.Message}");
+                try
+                {
+                    client?.Close();
+                }
+                catch
+                {
+                }
 
-                _isConnected = false;
-
+                Disconnect();
                 return false;
             }
         }
 
-        public async Task SendAsync(byte[] data)
+        public async Task SendAsync(byte[] data, CancellationToken cancellationToken = default)
         {
             if (!_isConnected || _stream == null)
             {
-                throw new InvalidOperationException(
-                    "Chưa kết nối tới Server.");
+                throw new InvalidOperationException("Chưa kết nối tới Server.");
             }
 
-            await _stream.WriteAsync(data, 0, data.Length);
-        }
-
-        public async Task StartReceivingAsync(Action<byte[]> onDataReceived)
-        {
-            byte[] buffer = new byte[4096];
-
+            await _sendLock.WaitAsync(cancellationToken);
             try
             {
-                while (_isConnected && _stream != null)
+                if (!_isConnected || _stream == null)
                 {
-                    int bytesRead =
-                        await _stream.ReadAsync(
-                            buffer,
-                            0,
-                            buffer.Length);
-
-                    if (bytesRead == 0)
-                    {
-                        Console.WriteLine(
-                            "[TcpClientService] Server đã ngắt kết nối.");
-
-                        break;
-                    }
-
-                    byte[] receivedData = new byte[bytesRead];
-
-                    Array.Copy(
-                        buffer,
-                        receivedData,
-                        bytesRead);
-
-                    onDataReceived(receivedData);
+                    throw new InvalidOperationException("Chưa kết nối tới Server.");
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"[TcpClientService Error] Lỗi nhận dữ liệu: {ex.Message}");
+
+                await _stream.WriteAsync(data, cancellationToken);
+                await _stream.FlushAsync(cancellationToken);
             }
             finally
             {
-                Disconnect();
+                _sendLock.Release();
             }
+        }
+
+        public async Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken = default)
+        {
+            if (_stream == null)
+            {
+                throw new InvalidOperationException("Chưa kết nối tới Server.");
+            }
+
+            return await _stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
         }
 
         public void Disconnect()
         {
-            if (!_isConnected)
-                return;
+            lock (_sync)
+            {
+                if (!_isConnected && _client == null && _stream == null)
+                {
+                    return;
+                }
 
-            _isConnected = false;
+                _isConnected = false;
 
-            _stream?.Close();
-            _client?.Close();
+                try
+                {
+                    _stream?.Close();
+                }
+                catch
+                {
+                }
 
-            Console.WriteLine(
-                "[TcpClientService] Đã ngắt kết nối và giải phóng tài nguyên.");
+                try
+                {
+                    _client?.Close();
+                }
+                catch
+                {
+                }
+
+                _stream = null;
+                _client = null;
+            }
+
+            Console.WriteLine("[TcpClientService] Đã ngắt kết nối và giải phóng tài nguyên.");
         }
     }
 }
