@@ -1,3 +1,7 @@
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace Shared.Network
 {
     public interface IDataReceiver
@@ -11,3 +15,4 @@ namespace Shared.Network
             CancellationToken cancellationToken = default);
     }
 }
+

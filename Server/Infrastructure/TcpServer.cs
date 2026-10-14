@@ -16,6 +16,8 @@ namespace Server.Infrastructure
         private TcpListener? _listener;
         private volatile bool _isRunning;
 
+        public event Action<string, Command>? CommandSent;
+        public event Action<string, Response>? ResponseReceived;
         public event Action<string, Command>? CommandReceived;
         public event Action<string, Response>? ResponseSent;
 
@@ -50,8 +52,10 @@ namespace Server.Infrastructure
                     {
                         TcpClient client = await _listener.AcceptTcpClientAsync(cancellationToken);
                         var session = new ClientSession(client);
+                        ProtocolSession protocol = CreateProtocol(session);
+                        session.AttachProtocol(protocol);
                         _connectionManager.AddSession(session);
-                        _ = Task.Run(() => HandleSessionAsync(session, cancellationToken));
+                        _ = Task.Run(() => HandleSessionAsync(session, protocol, cancellationToken));
                     }
                     catch (OperationCanceledException) when (!_isRunning || cancellationToken.IsCancellationRequested)
                     {
@@ -101,7 +105,21 @@ namespace Server.Infrastructure
             Console.WriteLine("[TcpServer] Đã dừng và giải phóng tài nguyên.");
         }
 
-        private async Task HandleSessionAsync(IClientSession session, CancellationToken cancellationToken)
+        public async Task<Response> SendCommandAsync(
+            string sessionId,
+            Command command,
+            CancellationToken cancellationToken = default)
+        {
+            IClientSession? session = _connectionManager.GetSession(sessionId);
+            if (session == null || !session.IsConnected)
+            {
+                throw new InvalidOperationException($"Không tìm thấy client {sessionId}.");
+            }
+
+            return await session.SendCommandAsync(command, cancellationToken);
+        }
+
+        private ProtocolSession CreateProtocol(ClientSession session)
         {
             var protocol = new ProtocolSession(
                 session,
@@ -111,9 +129,18 @@ namespace Server.Infrastructure
                 _serializer,
                 _validator);
 
+            protocol.CommandSent += command => CommandSent?.Invoke(session.SessionId, command);
+            protocol.ResponseReceived += response => ResponseReceived?.Invoke(session.SessionId, response);
             protocol.CommandReceived += command => CommandReceived?.Invoke(session.SessionId, command);
             protocol.ResponseSent += response => ResponseSent?.Invoke(session.SessionId, response);
+            return protocol;
+        }
 
+        private async Task HandleSessionAsync(
+            ClientSession session,
+            ProtocolSession protocol,
+            CancellationToken cancellationToken)
+        {
             try
             {
                 await protocol.RunAsync(cancellationToken);

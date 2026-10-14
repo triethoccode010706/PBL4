@@ -14,6 +14,7 @@ namespace Shared.Protocol
         private readonly CommandDispatcher _dispatcher;
         private readonly ConcurrentDictionary<string, TaskCompletionSource<Response>> _pending = new();
 
+        public event Action<Command>? CommandSent;
         public event Action<Command>? CommandReceived;
         public event Action<Response>? ResponseReceived;
         public event Action<Response>? ResponseSent;
@@ -62,6 +63,7 @@ namespace Shared.Protocol
                     Command = command
                 }, cancellationToken);
 
+                CommandSent?.Invoke(command);
                 return await tcs.Task.WaitAsync(cancellationToken);
             }
             catch

@@ -1,4 +1,5 @@
-﻿using Shared.Network;
+﻿using Shared.Models;
+using Shared.Network;
 
 namespace Server.Infrastructure
 {
@@ -7,6 +8,11 @@ namespace Server.Infrastructure
         string SessionId { get; }
         bool IsConnected { get; }
         string RemoteEndPoint { get; }
+
+        Task<Response> SendCommandAsync(
+            Command command,
+            CancellationToken cancellationToken = default);
+
         void Disconnect();
     }
 }
