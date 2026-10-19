@@ -66,6 +66,15 @@ namespace Server.Infrastructure
                 await _stream.WriteAsync(data, cancellationToken);
                 await _stream.FlushAsync(cancellationToken);
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Session đã ngắt kết nối.", ex);
+            }
             finally
             {
                 _sendLock.Release();
@@ -78,7 +87,24 @@ namespace Server.Infrastructure
             int count,
             CancellationToken cancellationToken = default)
         {
-            return await _stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            if (!_isConnected)
+            {
+                throw new InvalidOperationException("Session đã ngắt kết nối.");
+            }
+
+            try
+            {
+                return await _stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Session đã ngắt kết nối.", ex);
+            }
         }
 
         public void Disconnect()
@@ -91,6 +117,14 @@ namespace Server.Infrastructure
                 }
 
                 _isConnected = false;
+
+                try
+                {
+                    _client.Client.Shutdown(SocketShutdown.Both);
+                }
+                catch
+                {
+                }
 
                 try
                 {
@@ -110,6 +144,11 @@ namespace Server.Infrastructure
             }
 
             Console.WriteLine($"[ClientSession] Đã đóng phiên: {SessionId} ({RemoteEndPoint})");
+        }
+
+        private static bool IsConnectionLost(Exception ex)
+        {
+            return ex is IOException or ObjectDisposedException or SocketException;
         }
     }
 }

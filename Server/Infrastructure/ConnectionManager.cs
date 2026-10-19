@@ -21,7 +21,14 @@ namespace Server.Infrastructure
         {
             if (_sessions.TryRemove(sessionId, out var session))
             {
-                session.Disconnect();
+                try
+                {
+                    session.Disconnect();
+                }
+                catch
+                {
+                }
+
                 Console.WriteLine(
                     $"[ConnectionManager] Đã xóa session: {sessionId}. Tổng: {_sessions.Count}");
                 SessionRemoved?.Invoke(sessionId);

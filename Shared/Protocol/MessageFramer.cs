@@ -45,7 +45,8 @@ namespace Shared.Protocol
 
             if (headerRead < HeaderSize)
             {
-                return null;
+                throw new EndOfStreamException(
+                    $"Frame bị cắt giữa chừng: header {headerRead}/{HeaderSize} byte.");
             }
 
             int length = BinaryPrimitives.ReadInt32LittleEndian(header);
@@ -58,7 +59,8 @@ namespace Shared.Protocol
             int payloadRead = await ReadExactAsync(stream, payload, cancellationToken);
             if (payloadRead < length)
             {
-                return null;
+                throw new EndOfStreamException(
+                    $"Frame bị cắt giữa chừng: payload {payloadRead}/{length} byte.");
             }
 
             return payload;

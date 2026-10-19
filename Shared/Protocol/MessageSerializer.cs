@@ -44,6 +44,11 @@ namespace Shared.Protocol
 
         private static T DeserializeRequired<T>(byte[] payload, string errorMessage)
         {
+            if (payload == null || payload.Length == 0)
+            {
+                throw new ProtocolValidationException(errorMessage);
+            }
+
             try
             {
                 T? value = JsonSerializer.Deserialize<T>(payload, JsonOptions);

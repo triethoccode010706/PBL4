@@ -1,4 +1,5 @@
-﻿using System.Net.Sockets;
+﻿using System.IO;
+using System.Net.Sockets;
 
 namespace Client.Infrastructure
 {
@@ -38,6 +39,19 @@ namespace Client.Infrastructure
                 Console.WriteLine($"[TcpClientService] Đã kết nối {serverIp}:{port}");
                 return true;
             }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    client?.Close();
+                }
+                catch
+                {
+                }
+
+                Disconnect();
+                throw;
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[TcpClientService] Không thể kết nối: {ex.Message}");
@@ -72,6 +86,15 @@ namespace Client.Infrastructure
                 await _stream.WriteAsync(data, cancellationToken);
                 await _stream.FlushAsync(cancellationToken);
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Chưa kết nối tới Server.", ex);
+            }
             finally
             {
                 _sendLock.Release();
@@ -84,12 +107,25 @@ namespace Client.Infrastructure
             int count,
             CancellationToken cancellationToken = default)
         {
-            if (_stream == null)
+            NetworkStream? stream = _stream;
+            if (!_isConnected || stream == null)
             {
                 throw new InvalidOperationException("Chưa kết nối tới Server.");
             }
 
-            return await _stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            try
+            {
+                return await stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Chưa kết nối tới Server.", ex);
+            }
         }
 
         public void Disconnect()
@@ -105,7 +141,16 @@ namespace Client.Infrastructure
 
                 try
                 {
+                    _client?.Client.Shutdown(SocketShutdown.Both);
+                }
+                catch
+                {
+                }
+
+                try
+                {
                     _stream?.Close();
+                    _stream?.Dispose();
                 }
                 catch
                 {
@@ -114,6 +159,7 @@ namespace Client.Infrastructure
                 try
                 {
                     _client?.Close();
+                    _client?.Dispose();
                 }
                 catch
                 {
@@ -124,6 +170,11 @@ namespace Client.Infrastructure
             }
 
             Console.WriteLine("[TcpClientService] Đã ngắt kết nối và giải phóng tài nguyên.");
+        }
+
+        private static bool IsConnectionLost(Exception ex)
+        {
+            return ex is IOException or ObjectDisposedException or SocketException;
         }
     }
 }

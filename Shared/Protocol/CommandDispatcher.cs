@@ -47,6 +47,10 @@ namespace Shared.Protocol
 
                 return response;
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 return Response.Fail(

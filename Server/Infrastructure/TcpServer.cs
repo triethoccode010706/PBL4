@@ -13,6 +13,8 @@ namespace Server.Infrastructure
         private readonly IMessageSerializer _serializer;
         private readonly IMessageValidator _validator;
         private readonly Func<CommandDispatcher> _dispatcherFactory;
+        private readonly object _sync = new();
+        private CancellationTokenSource? _runCts;
         private TcpListener? _listener;
         private volatile bool _isRunning;
 
@@ -39,39 +41,46 @@ namespace Server.Infrastructure
 
         public async Task StartAsync(CancellationToken cancellationToken = default)
         {
-            _listener = new TcpListener(IPAddress.Any, _port);
-            _listener.Start();
-            _isRunning = true;
+            lock (_sync)
+            {
+                if (_isRunning)
+                {
+                    throw new InvalidOperationException("TcpServer đang chạy.");
+                }
+
+                _runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                _listener = new TcpListener(IPAddress.Any, _port);
+                _listener.Start();
+                _isRunning = true;
+            }
+
+            CancellationToken runToken = _runCts.Token;
             Console.WriteLine($"[TcpServer] Đang lắng nghe cổng {_port}.");
 
             try
             {
-                while (_isRunning && !cancellationToken.IsCancellationRequested)
+                while (_isRunning && !runToken.IsCancellationRequested)
                 {
                     try
                     {
-                        TcpClient client = await _listener.AcceptTcpClientAsync(cancellationToken);
-                        var session = new ClientSession(client);
-                        ProtocolSession protocol = CreateProtocol(session);
-                        session.AttachProtocol(protocol);
-                        _connectionManager.AddSession(session);
-                        _ = Task.Run(() => HandleSessionAsync(session, protocol, cancellationToken));
+                        TcpClient client = await _listener.AcceptTcpClientAsync(runToken);
+                        _ = HandleAcceptedClientAsync(client, runToken);
                     }
-                    catch (OperationCanceledException) when (!_isRunning || cancellationToken.IsCancellationRequested)
+                    catch (OperationCanceledException) when (!_isRunning || runToken.IsCancellationRequested)
                     {
                         break;
                     }
-                    catch (ObjectDisposedException) when (!_isRunning)
+                    catch (ObjectDisposedException) when (!_isRunning || runToken.IsCancellationRequested)
                     {
                         break;
                     }
-                    catch (SocketException) when (!_isRunning)
+                    catch (SocketException) when (!_isRunning || runToken.IsCancellationRequested)
                     {
                         break;
                     }
                     catch (Exception ex)
                     {
-                        if (_isRunning)
+                        if (_isRunning && !runToken.IsCancellationRequested)
                         {
                             Console.WriteLine($"[TcpServer] Lỗi chấp nhận client: {ex.Message}");
                         }
@@ -86,19 +95,33 @@ namespace Server.Infrastructure
             finally
             {
                 Console.WriteLine("[TcpServer] Vòng Accept đã kết thúc.");
+                Stop();
             }
         }
 
         public void Stop()
         {
-            _isRunning = false;
+            lock (_sync)
+            {
+                _isRunning = false;
 
-            try
-            {
-                _listener?.Stop();
-            }
-            catch
-            {
+                try
+                {
+                    _runCts?.Cancel();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _listener?.Stop();
+                }
+                catch
+                {
+                }
+
+                _listener = null;
             }
 
             _connectionManager.DisconnectAll();
@@ -119,6 +142,40 @@ namespace Server.Infrastructure
             return await session.SendCommandAsync(command, cancellationToken);
         }
 
+        private async Task HandleAcceptedClientAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            ClientSession? session = null;
+            try
+            {
+                session = new ClientSession(client);
+                ProtocolSession protocol = CreateProtocol(session);
+                session.AttachProtocol(protocol);
+                _connectionManager.AddSession(session);
+                await protocol.RunAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TcpServer] Lỗi phiên: {ex.Message}");
+            }
+            finally
+            {
+                if (session != null)
+                {
+                    _connectionManager.RemoveSession(session.SessionId);
+                }
+                else
+                {
+                    try
+                    {
+                        client.Close();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
         private ProtocolSession CreateProtocol(ClientSession session)
         {
             var protocol = new ProtocolSession(
@@ -134,21 +191,6 @@ namespace Server.Infrastructure
             protocol.CommandReceived += command => CommandReceived?.Invoke(session.SessionId, command);
             protocol.ResponseSent += response => ResponseSent?.Invoke(session.SessionId, response);
             return protocol;
-        }
-
-        private async Task HandleSessionAsync(
-            ClientSession session,
-            ProtocolSession protocol,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                await protocol.RunAsync(cancellationToken);
-            }
-            finally
-            {
-                _connectionManager.RemoveSession(session.SessionId);
-            }
         }
     }
 }

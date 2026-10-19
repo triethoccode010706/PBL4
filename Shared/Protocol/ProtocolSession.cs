@@ -12,6 +12,7 @@ namespace Shared.Protocol
         private readonly IMessageSerializer _serializer;
         private readonly IMessageValidator _validator;
         private readonly CommandDispatcher _dispatcher;
+        private readonly TimeSpan _requestTimeout;
         private readonly ConcurrentDictionary<string, TaskCompletionSource<Response>> _pending = new();
 
         public event Action<Command>? CommandSent;
@@ -25,7 +26,8 @@ namespace Shared.Protocol
             CommandDispatcher dispatcher,
             IMessageFramer? framer = null,
             IMessageSerializer? serializer = null,
-            IMessageValidator? validator = null)
+            IMessageValidator? validator = null,
+            TimeSpan? requestTimeout = null)
         {
             _sender = sender;
             _stream = stream;
@@ -33,12 +35,18 @@ namespace Shared.Protocol
             _framer = framer ?? new MessageFramer();
             _serializer = serializer ?? new MessageSerializer();
             _validator = validator ?? new MessageValidator();
+            _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(30);
+            if (_requestTimeout <= TimeSpan.Zero && _requestTimeout != Timeout.InfiniteTimeSpan)
+            {
+                throw new ArgumentOutOfRangeException(nameof(requestTimeout));
+            }
         }
 
         public async Task<Response> SendCommandAsync(
             Command command,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _validator.ValidateCommand(command);
 
             var tcs = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,14 +54,6 @@ namespace Shared.Protocol
             {
                 throw new InvalidOperationException($"RequestId trùng: {command.RequestId}");
             }
-
-            using CancellationTokenRegistration registration = cancellationToken.Register(() =>
-            {
-                if (_pending.TryRemove(command.RequestId, out TaskCompletionSource<Response>? pending))
-                {
-                    pending.TrySetCanceled(cancellationToken);
-                }
-            });
 
             try
             {
@@ -64,11 +64,21 @@ namespace Shared.Protocol
                 }, cancellationToken);
 
                 CommandSent?.Invoke(command);
-                return await tcs.Task.WaitAsync(cancellationToken);
+
+                if (_requestTimeout == Timeout.InfiniteTimeSpan)
+                {
+                    return await tcs.Task.WaitAsync(cancellationToken);
+                }
+
+                return await tcs.Task.WaitAsync(_requestTimeout, cancellationToken);
             }
             catch
             {
-                _pending.TryRemove(command.RequestId, out _);
+                if (_pending.TryRemove(command.RequestId, out TaskCompletionSource<Response>? pending))
+                {
+                    pending.TrySetCanceled();
+                }
+
                 throw;
             }
         }
@@ -85,19 +95,29 @@ namespace Shared.Protocol
                         break;
                     }
 
+                    ProtocolEnvelope? parsed = null;
                     ProtocolEnvelope envelope;
                     try
                     {
-                        envelope = _serializer.DeserializeEnvelope(payload);
-                        _validator.ValidateEnvelope(envelope);
+                        parsed = _serializer.DeserializeEnvelope(payload);
+                        _validator.ValidateEnvelope(parsed);
+                        envelope = parsed;
                     }
                     catch (Exception ex)
                     {
+                        string requestId = parsed?.Command?.RequestId
+                            ?? parsed?.Response?.RequestId
+                            ?? Guid.NewGuid().ToString();
+                        if (string.IsNullOrWhiteSpace(requestId))
+                        {
+                            requestId = Guid.NewGuid().ToString();
+                        }
+
                         await WriteEnvelopeAsync(new ProtocolEnvelope
                         {
                             Kind = ProtocolMessageKinds.Response,
                             Response = Response.Fail(
-                                Guid.NewGuid().ToString(),
+                                requestId,
                                 ErrorCodes.InvalidMessage,
                                 ex.Message)
                         }, cancellationToken);
@@ -120,6 +140,12 @@ namespace Shared.Protocol
                 }
             }
             catch (OperationCanceledException)
+            {
+            }
+            catch (EndOfStreamException)
+            {
+            }
+            catch (ProtocolValidationException)
             {
             }
             catch (IOException)
