@@ -1,17 +1,18 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using Shared.Models;
+using Shared.Network;
 
 namespace Server.Infrastructure
 {
-    public interface IClientSession
+    public interface IClientSession : IDataSender, IDataReceiver
     {
         string SessionId { get; }
         bool IsConnected { get; }
-        Task StartReceivingAsync(Action<string, string> onMessageReceived);
+        string RemoteEndPoint { get; }
+
+        Task<Response> SendCommandAsync(
+            Command command,
+            CancellationToken cancellationToken = default);
+
         void Disconnect();
-        Task SendAsync(string message);
     }
 }

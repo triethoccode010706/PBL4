@@ -1,0 +1,150 @@
+using System.Windows;
+using System.Windows.Controls;
+using Server.Application;
+using Server.Domain;
+using Shared.Models;
+
+namespace Server.Presentation
+{
+    public partial class MainWindow : Window
+    {
+        private readonly IManagementService _management;
+        private bool _isSending;
+
+        public MainWindow(IManagementService management)
+        {
+            _management = management;
+            InitializeComponent();
+            Closed += OnClosed;
+            BindApplicationEvents();
+
+            _management.Start();
+            StatusText.Text = "Máy quản lý đang lắng nghe cổng 5000";
+            AppendLog("Server đã khởi động. Chọn Client rồi gửi lệnh (PING, GET_INFO, ...).");
+        }
+
+        private void BindApplicationEvents()
+        {
+            _management.ClientConnected += client =>
+            {
+                Dispatcher.Invoke(() => AddClient(client));
+            };
+
+            _management.ClientDisconnected += sessionId =>
+            {
+                Dispatcher.Invoke(() => RemoveClient(sessionId));
+            };
+
+            _management.CommandSent += (sessionId, command) =>
+            {
+                Dispatcher.Invoke(() =>
+                    AppendLog($"→ {ShortId(sessionId)}: {command.Type} (id={command.RequestId})"));
+            };
+
+            _management.ResponseReceived += (sessionId, response) =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    string status = response.Success ? "OK" : $"LỖI {response.ErrorCode}";
+                    AppendLog($"← {ShortId(sessionId)}: {status} {response.Message} {response.Data}".Trim());
+                });
+            };
+
+            _management.ErrorOccurred += message =>
+            {
+                Dispatcher.Invoke(() => AppendLog($"Lỗi server: {message}"));
+            };
+        }
+
+        private void AddClient(ConnectedClient client)
+        {
+            ClientList.Items.Add(new ListBoxItem
+            {
+                Content = client.ToString(),
+                Tag = client.SessionId
+            });
+
+            if (ClientList.SelectedItem == null)
+            {
+                ClientList.SelectedIndex = 0;
+            }
+
+            AppendLog($"Client kết nối: {client.SessionId} từ {client.RemoteEndPoint}");
+        }
+
+        private void RemoveClient(string sessionId)
+        {
+            object? item = ClientList.Items
+                .Cast<object>()
+                .FirstOrDefault(x => x is ListBoxItem listItem
+                    && string.Equals(listItem.Tag as string, sessionId, StringComparison.Ordinal));
+            if (item != null)
+            {
+                ClientList.Items.Remove(item);
+            }
+
+            AppendLog($"Client ngắt kết nối: {sessionId}");
+        }
+
+        private async void OnSendCommandClick(object sender, RoutedEventArgs e)
+        {
+            if (_isSending)
+            {
+                return;
+            }
+
+            if (ClientList.SelectedItem is not ListBoxItem selected
+                || selected.Tag is not string sessionId
+                || string.IsNullOrWhiteSpace(sessionId))
+            {
+                AppendLog("Hãy chọn một Client trước khi gửi lệnh.");
+                return;
+            }
+
+            if (CommandCombo.SelectedItem is not ComboBoxItem commandItem
+                || commandItem.Tag is not string commandName
+                || !Enum.TryParse(commandName, ignoreCase: true, out CommandType commandType))
+            {
+                AppendLog("Lệnh không hợp lệ.");
+                return;
+            }
+
+            _isSending = true;
+            SendCommandButton.IsEnabled = false;
+
+            try
+            {
+                await _management.SendCommandAsync(sessionId, commandType);
+            }
+            catch (OperationCanceledException)
+            {
+                AppendLog("Đã hủy gửi lệnh.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Không gửi được lệnh: {ex.Message}");
+            }
+            finally
+            {
+                _isSending = false;
+                SendCommandButton.IsEnabled = true;
+            }
+        }
+
+        private void AppendLog(string line)
+        {
+            LogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
+            LogBox.ScrollToEnd();
+        }
+
+        private static string ShortId(string sessionId)
+        {
+            return sessionId.Length <= 8 ? sessionId : sessionId[..8];
+        }
+
+        private void OnClosed(object? sender, EventArgs e)
+        {
+            _management.Stop();
+        }
+    }
+}

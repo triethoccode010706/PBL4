@@ -1,58 +1,154 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.IO;
 using System.Net.Sockets;
+using Shared.Models;
+using Shared.Protocol;
+
 namespace Server.Infrastructure
 {
-    public class ClientSession: IClientSession
+    public class ClientSession : IClientSession
     {
-        public string SessionId { get; }= Guid.NewGuid().ToString();
         private readonly TcpClient _client;
         private readonly NetworkStream _stream;
-        private bool _isConnected = true;
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly object _sync = new();
+        private ProtocolSession? _protocol;
+        private volatile bool _isConnected = true;
+
+        public string SessionId { get; } = Guid.NewGuid().ToString();
         public bool IsConnected => _isConnected;
+        public string RemoteEndPoint { get; }
+        public Stream Stream => _stream;
+
         public ClientSession(TcpClient client)
         {
             _client = client;
             _stream = client.GetStream();
-            _isConnected = true;
+            RemoteEndPoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
         }
-        public async Task StartReceivingAsync(Action <string, string>onMessageReceived)
-        {
-            byte[] buffer = new byte[4096];
-            while (_isConnected && _client.Connected)
-            {
-                try
-                {   
-                    int bytesRead = await _stream.ReadAsync (buffer, 0, buffer.Length);
-                    if (bytesRead == 0) { break; }
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    onMessageReceived(SessionId, message);
-                }
-                catch(Exception ex)
-                {
-                    Console.WriteLine(ex);
-                    break;
-                }   
-            }
-            Disconnect();   
-        }
-        public async Task SendAsync(string message)
-        {
-            if (!_isConnected || _stream == null) return;
 
-            byte[] data = Encoding.UTF8.GetBytes(message);
-            await _stream.WriteAsync(data, 0, data.Length);
+        public void AttachProtocol(ProtocolSession protocol)
+        {
+            _protocol = protocol ?? throw new ArgumentNullException(nameof(protocol));
         }
+
+        public async Task<Response> SendCommandAsync(
+            Command command,
+            CancellationToken cancellationToken = default)
+        {
+            if (_protocol == null)
+            {
+                throw new InvalidOperationException("Session chưa gắn ProtocolSession.");
+            }
+
+            if (!_isConnected)
+            {
+                throw new InvalidOperationException("Session đã ngắt kết nối.");
+            }
+
+            return await _protocol.SendCommandAsync(command, cancellationToken);
+        }
+
+        public async Task SendAsync(byte[] data, CancellationToken cancellationToken = default)
+        {
+            if (!_isConnected)
+            {
+                throw new InvalidOperationException("Session đã ngắt kết nối.");
+            }
+
+            await _sendLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (!_isConnected)
+                {
+                    throw new InvalidOperationException("Session đã ngắt kết nối.");
+                }
+
+                await _stream.WriteAsync(data, cancellationToken);
+                await _stream.FlushAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Session đã ngắt kết nối.", ex);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
+        }
+
+        public async Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_isConnected)
+            {
+                throw new InvalidOperationException("Session đã ngắt kết nối.");
+            }
+
+            try
+            {
+                return await _stream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsConnectionLost(ex))
+            {
+                Disconnect();
+                throw new InvalidOperationException("Session đã ngắt kết nối.", ex);
+            }
+        }
+
         public void Disconnect()
         {
-            _isConnected = false;
-            _stream.Close();
-            _client.Close();
-            Console.WriteLine($"[ClientSession] Đã đóng phiên làm việc: {SessionId}");
+            lock (_sync)
+            {
+                if (!_isConnected)
+                {
+                    return;
+                }
+
+                _isConnected = false;
+
+                try
+                {
+                    _client.Client.Shutdown(SocketShutdown.Both);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _stream.Close();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _client.Close();
+                }
+                catch
+                {
+                }
+            }
+
+            Console.WriteLine($"[ClientSession] Đã đóng phiên: {SessionId} ({RemoteEndPoint})");
+        }
+
+        private static bool IsConnectionLost(Exception ex)
+        {
+            return ex is IOException or ObjectDisposedException or SocketException;
         }
     }
-    
 }

@@ -1,17 +1,11 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using Shared.Network;
 
 namespace Client.Infrastructure
 {
-    public interface ITcpClient
+    public interface ITcpClient : IDataSender, IDataReceiver
     {
         bool IsConnected { get; }
-        Task<bool> ConnectAsync(string serverIp, int port);
-        Task SendAsync(byte[] data);
-        Task StartReceivingAsync(Action<byte[]>onDataReceived);
+        Task<bool> ConnectAsync(string serverIp, int port, CancellationToken cancellationToken = default);
         void Disconnect();
     }
 }

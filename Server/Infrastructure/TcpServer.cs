@@ -1,67 +1,196 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using System.Threading.Tasks;
+using Shared.Models;
+using Shared.Protocol;
 
 namespace Server.Infrastructure
 {
     public class TcpServer : IServer
     {
-        private TcpListener? _listener;
-        private bool _isRunning = false;
         private readonly int _port;
         private readonly IConnectionManager _connectionManager;
-        public TcpServer(int port, IConnectionManager connectionManager)
+        private readonly IMessageFramer _framer;
+        private readonly IMessageSerializer _serializer;
+        private readonly IMessageValidator _validator;
+        private readonly Func<CommandDispatcher> _dispatcherFactory;
+        private readonly object _sync = new();
+        private CancellationTokenSource? _runCts;
+        private TcpListener? _listener;
+        private volatile bool _isRunning;
+
+        public event Action<string, Command>? CommandSent;
+        public event Action<string, Response>? ResponseReceived;
+        public event Action<string, Command>? CommandReceived;
+        public event Action<string, Response>? ResponseSent;
+
+        public TcpServer(
+            int port,
+            IConnectionManager connectionManager,
+            IMessageFramer? framer = null,
+            IMessageSerializer? serializer = null,
+            IMessageValidator? validator = null,
+            Func<CommandDispatcher>? dispatcherFactory = null)
         {
             _port = port;
             _connectionManager = connectionManager;
+            _framer = framer ?? new MessageFramer();
+            _serializer = serializer ?? new MessageSerializer();
+            _validator = validator ?? new MessageValidator();
+            _dispatcherFactory = dispatcherFactory ?? ProtocolServices.CreateServerDispatcher;
         }
-        public async Task StartAsync()
+
+        public async Task StartAsync(CancellationToken cancellationToken = default)
         {
-            _listener = new TcpListener(System.Net.IPAddress.Any, _port);
-            _listener.Start();
-            _isRunning = true;
-            Console.WriteLine($"Server started on port {_port}.");
-            while (_isRunning)
+            lock (_sync)
             {
+                if (_isRunning)
+                {
+                    throw new InvalidOperationException("TcpServer đang chạy.");
+                }
+
+                _runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                _listener = new TcpListener(IPAddress.Any, _port);
+                _listener.Start();
+                _isRunning = true;
+            }
+
+            CancellationToken runToken = _runCts.Token;
+            Console.WriteLine($"[TcpServer] Đang lắng nghe cổng {_port}.");
+
+            try
+            {
+                while (_isRunning && !runToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        TcpClient client = await _listener.AcceptTcpClientAsync(runToken);
+                        _ = HandleAcceptedClientAsync(client, runToken);
+                    }
+                    catch (OperationCanceledException) when (!_isRunning || runToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (ObjectDisposedException) when (!_isRunning || runToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (SocketException) when (!_isRunning || runToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_isRunning && !runToken.IsCancellationRequested)
+                        {
+                            Console.WriteLine($"[TcpServer] Lỗi chấp nhận client: {ex.Message}");
+                        }
+                        else
+                        {
+                            Console.WriteLine("[TcpServer] Server đã dừng.");
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                Console.WriteLine("[TcpServer] Vòng Accept đã kết thúc.");
+                Stop();
+            }
+        }
+
+        public void Stop()
+        {
+            lock (_sync)
+            {
+                _isRunning = false;
+
                 try
                 {
-                    TcpClient client = await _listener.AcceptTcpClientAsync();
-                    Console.WriteLine("Client connected.");
-                    ClientSession session= new ClientSession(client);
-                    _connectionManager.AddSession(session);
-                    _ = Task.Run(async () =>
-                    {
-                        await session.StartReceivingAsync((sessionId, message) =>
-                        {
-                            // Đây chính là callback (Action) nhận message từ Client gửi lên
-                            Console.WriteLine($"[Received from {sessionId}]: {message}");
-                        });
-
-                        // Khi Client ngắt kết nối, xóa khỏi danh sách quản lý
-                        _connectionManager.RemoveSession(session.SessionId);
-                    });
+                    _runCts?.Cancel();
                 }
-                catch (Exception ex)
+                catch
                 {
-                    if (_isRunning)
+                }
+
+                try
+                {
+                    _listener?.Stop();
+                }
+                catch
+                {
+                }
+
+                _listener = null;
+            }
+
+            _connectionManager.DisconnectAll();
+            Console.WriteLine("[TcpServer] Đã dừng và giải phóng tài nguyên.");
+        }
+
+        public async Task<Response> SendCommandAsync(
+            string sessionId,
+            Command command,
+            CancellationToken cancellationToken = default)
+        {
+            IClientSession? session = _connectionManager.GetSession(sessionId);
+            if (session == null || !session.IsConnected)
+            {
+                throw new InvalidOperationException($"Không tìm thấy client {sessionId}.");
+            }
+
+            return await session.SendCommandAsync(command, cancellationToken);
+        }
+
+        private async Task HandleAcceptedClientAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            ClientSession? session = null;
+            try
+            {
+                session = new ClientSession(client);
+                ProtocolSession protocol = CreateProtocol(session);
+                session.AttachProtocol(protocol);
+                _connectionManager.AddSession(session);
+                await protocol.RunAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TcpServer] Lỗi phiên: {ex.Message}");
+            }
+            finally
+            {
+                if (session != null)
+                {
+                    _connectionManager.RemoveSession(session.SessionId);
+                }
+                else
+                {
+                    try
                     {
-                        Console.WriteLine("Server stopped.");
+                        client.Close();
                     }
-                    else
+                    catch
                     {
-                        Console.WriteLine($"Error accepting client: {ex.Message}");
                     }
                 }
             }
         }
-        public void Stop()
+
+        private ProtocolSession CreateProtocol(ClientSession session)
         {
-            _isRunning = false;
-            _listener?.Stop();
-            Console.WriteLine("[Server] Đã dừng hoạt động.");
+            var protocol = new ProtocolSession(
+                session,
+                session.Stream,
+                _dispatcherFactory(),
+                _framer,
+                _serializer,
+                _validator);
+
+            protocol.CommandSent += command => CommandSent?.Invoke(session.SessionId, command);
+            protocol.ResponseReceived += response => ResponseReceived?.Invoke(session.SessionId, response);
+            protocol.CommandReceived += command => CommandReceived?.Invoke(session.SessionId, command);
+            protocol.ResponseSent += response => ResponseSent?.Invoke(session.SessionId, response);
+            return protocol;
         }
     }
 }
