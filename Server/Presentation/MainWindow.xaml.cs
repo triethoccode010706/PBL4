@@ -10,6 +10,8 @@ namespace Server.Presentation
     {
         private readonly IManagementService _management;
         private bool _isSending;
+        private bool _isClosing;
+        private bool _canClose;
 
         public MainWindow(IManagementService management)
         {
@@ -18,9 +20,9 @@ namespace Server.Presentation
             Closed += OnClosed;
             BindApplicationEvents();
 
+            StatusText.Text = "Đang khởi động Server...";
             _management.Start();
-            StatusText.Text = "Máy quản lý đang lắng nghe cổng 5000";
-            AppendLog("Server đã khởi động. Chọn Client rồi gửi lệnh (PING, GET_INFO, ...).");
+            Closing += OnClosing;
         }
 
         private void BindApplicationEvents()
@@ -53,6 +55,23 @@ namespace Server.Presentation
             _management.ErrorOccurred += message =>
             {
                 Dispatcher.Invoke(() => AppendLog($"Lỗi server: {message}"));
+            };
+            _management.ClientUpdated += client =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    UpdateClient(client);
+                }));
+            };
+            _management.ServerStarted += () =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    StatusText.Text =
+                        "Máy quản lý đang lắng nghe cổng 5000";
+
+                    AppendLog("Server đã khởi động.");
+                }));
             };
         }
 
@@ -130,6 +149,19 @@ namespace Server.Presentation
                 SendCommandButton.IsEnabled = true;
             }
         }
+        private void UpdateClient(ConnectedClient client)
+        {
+            foreach (ListBoxItem item in ClientList.Items)
+            {
+                string? sessionId = item.Tag as string;
+
+                if (sessionId == client.SessionId)
+                {
+                    item.Content = client.ToString();
+                    break;
+                }
+            }
+        }
 
         private void AppendLog(string line)
         {
@@ -145,6 +177,40 @@ namespace Server.Presentation
         private void OnClosed(object? sender, EventArgs e)
         {
             _management.Stop();
+        }
+        private async void OnClosing(
+    object? sender,
+    System.ComponentModel.CancelEventArgs e)
+        {
+            if (_canClose)
+            {
+                return;
+            }
+
+            e.Cancel = true;
+
+            if (_isClosing)
+            {
+                return;
+            }
+
+            _isClosing = true;
+            SendCommandButton.IsEnabled = false;
+            StatusText.Text = "Đang dừng Server...";
+
+            try
+            {
+                await _management.StopAsync();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Lỗi khi dừng: " + ex.Message);
+            }
+            finally
+            {
+                _canClose = true;
+                Close();
+            }
         }
     }
 }
