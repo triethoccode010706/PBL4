@@ -33,16 +33,18 @@ namespace Server.Domain
 
             MachineName = machineName;
         }
-        public void UpdateHeartbeat(DateTime heartbeatAt)
+        public bool UpdateHeartbeat(DateTime heartbeatAt)
         {
             lock (_stateLock)
             {
                 if (Status != ClientStatus.Connected)
                 {
-                    return;
+                    return false;
                 }
 
                 LastHeartbeatAt = heartbeatAt;
+
+                return true;
             }
         }
         public bool TryMarkTimedOut( DateTime now,TimeSpan timeout)

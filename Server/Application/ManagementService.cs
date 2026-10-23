@@ -24,6 +24,7 @@ namespace Server.Application
         public event Action<string, Response>? ResponseReceived;
         public event Action<string>? ErrorOccurred;
         public event Action? ServerStarted;
+        public event Action<string>? ServerStartFailed;
 
         public ManagementService(IServer server,IConnectionManager connectionManager,IClientManager clientManager,IHeartbeatService heartbeatService)
         {
@@ -134,7 +135,7 @@ namespace Server.Application
             Task? serverTask = null;
             Task? heartbeatTask = null;
             Task? timeoutTask = null;
-
+            bool serverStarted = false;
             try
             {
                 serverTask = _server.StartAsync(_cts.Token);
@@ -146,7 +147,7 @@ namespace Server.Application
                     await serverTask;
                     return;
                 }
-
+                serverStarted = true;
                 ServerStarted?.Invoke();
 
                 heartbeatTask =
@@ -169,7 +170,14 @@ namespace Server.Application
             }
             catch (Exception ex)
             {
-                ErrorOccurred?.Invoke(ex.Message);
+                if (!serverStarted)
+                {
+                    ServerStartFailed?.Invoke(ex.Message);
+                }
+                else
+                {
+                    ErrorOccurred?.Invoke(ex.Message);
+                }
             }
             finally
             {
@@ -188,9 +196,19 @@ namespace Server.Application
                         await serverTask;
                     }
                 }
+
                 catch (Exception)
                 {
                     // Lỗi đã được quan sát; vẫn tiếp tục dọn heartbeat.
+                }
+                try
+                {
+                    await _server.WaitForSessionsAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(
+                        "Lỗi khi chờ các session kết thúc: " + ex.Message);
                 }
 
                 try

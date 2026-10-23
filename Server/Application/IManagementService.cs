@@ -12,7 +12,7 @@ namespace Server.Application
         event Action<string, Response>? ResponseReceived;
         event Action<string>? ErrorOccurred;
         event Action? ServerStarted;
-
+        event Action<string>? ServerStartFailed;
         Task StopAsync();
         void Start();
         void Stop();

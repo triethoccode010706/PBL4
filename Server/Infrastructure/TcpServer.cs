@@ -17,7 +17,7 @@ namespace Server.Infrastructure
         private CancellationTokenSource? _runCts;
         private TcpListener? _listener;
         private volatile bool _isRunning;
-
+        private readonly List<Task> _sessionTasks = new();
         public event Action<string, Command>? CommandSent;
         public event Action<string, Response>? ResponseReceived;
         public event Action<string, Command>? CommandReceived;
@@ -64,7 +64,14 @@ namespace Server.Infrastructure
                     try
                     {
                         TcpClient client = await _listener.AcceptTcpClientAsync(runToken);
-                        _ = HandleAcceptedClientAsync(client, runToken);
+                        Task sessionTask = HandleAcceptedClientAsync(client, runToken);
+
+                        lock (_sync)
+                        {
+                            _sessionTasks.RemoveAll(task => task.IsCompleted);
+
+                            _sessionTasks.Add(sessionTask);
+                        }
                     }
                     catch (OperationCanceledException) when (!_isRunning || runToken.IsCancellationRequested)
                     {
@@ -191,6 +198,27 @@ namespace Server.Infrastructure
             protocol.CommandReceived += command => CommandReceived?.Invoke(session.SessionId, command);
             protocol.ResponseSent += response => ResponseSent?.Invoke(session.SessionId, response);
             return protocol;
+        }
+        public async Task WaitForSessionsAsync()
+        {
+            Task[] tasks;
+
+            lock (_sync)
+            {
+                tasks = _sessionTasks.ToArray();
+            }
+
+            try
+            {
+                await Task.WhenAll(tasks);
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    _sessionTasks.RemoveAll(task => task.IsCompleted);
+                }
+            }
         }
     }
 }

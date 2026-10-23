@@ -62,12 +62,13 @@ namespace Server.Application
                 return false;
             }
 
-            if (client.Status != ClientStatus.Connected)
+            bool updated = client.UpdateHeartbeat(heartbeatAt);
+
+            if (!updated)
             {
                 return false;
             }
 
-            client.UpdateHeartbeat(heartbeatAt);
             ClientUpdated?.Invoke(client);
 
             return true;
