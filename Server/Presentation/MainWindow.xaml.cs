@@ -57,10 +57,9 @@ namespace Server.Presentation
                     string status = response.Success
                         ? "OK"
                         : $"LỖI {response.ErrorCode}";
+                    AppendLog( $"← {ShortId(sessionId)}: {status} "  + $"{response.Message}");
 
-                    AppendLog(
-                        $"← {ShortId(sessionId)}: {status} "
-                        + $"{response.Message} {response.Data}");
+
                 });
             };
 
