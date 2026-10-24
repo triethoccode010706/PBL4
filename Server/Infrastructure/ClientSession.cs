@@ -68,6 +68,7 @@ namespace Server.Infrastructure
             }
             catch (OperationCanceledException)
             {
+                Disconnect();
                 throw;
             }
             catch (Exception ex) when (IsConnectionLost(ex))

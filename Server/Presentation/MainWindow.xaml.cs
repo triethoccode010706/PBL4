@@ -10,7 +10,11 @@ namespace Server.Presentation
     {
         private readonly IManagementService _management;
         private bool _isSending;
-
+        private bool _isClosing;
+        private bool _canClose;
+        private bool _isClosed;
+        private readonly HashSet<string> _removedSessions = new();
+        private bool _serverRunning;
         public MainWindow(IManagementService management)
         {
             _management = management;
@@ -18,46 +22,128 @@ namespace Server.Presentation
             Closed += OnClosed;
             BindApplicationEvents();
 
+            StatusText.Text = "Đang khởi động Server...";
+            SendCommandButton.IsEnabled = false;
             _management.Start();
-            StatusText.Text = "Máy quản lý đang lắng nghe cổng 5000";
-            AppendLog("Server đã khởi động. Chọn Client rồi gửi lệnh (PING, GET_INFO, ...).");
+            Closing += OnClosing;
         }
 
         private void BindApplicationEvents()
         {
             _management.ClientConnected += client =>
             {
-                Dispatcher.Invoke(() => AddClient(client));
+                RunOnUiThread(() => AddClient(client));
             };
 
             _management.ClientDisconnected += sessionId =>
             {
-                Dispatcher.Invoke(() => RemoveClient(sessionId));
+                RunOnUiThread(() => RemoveClient(sessionId));
             };
 
             _management.CommandSent += (sessionId, command) =>
             {
-                Dispatcher.Invoke(() =>
-                    AppendLog($"→ {ShortId(sessionId)}: {command.Type} (id={command.RequestId})"));
+                RunOnUiThread(() =>
+                {
+                    AppendLog(
+                        $"→ {ShortId(sessionId)}: {command.Type} "
+                        + $"(id={command.RequestId})");
+                });
             };
 
             _management.ResponseReceived += (sessionId, response) =>
             {
-                Dispatcher.Invoke(() =>
+                RunOnUiThread(() =>
                 {
-                    string status = response.Success ? "OK" : $"LỖI {response.ErrorCode}";
-                    AppendLog($"← {ShortId(sessionId)}: {status} {response.Message} {response.Data}".Trim());
+                    string status = response.Success
+                        ? "OK"
+                        : $"LỖI {response.ErrorCode}";
+
+                    AppendLog(
+                        $"← {ShortId(sessionId)}: {status} "
+                        + $"{response.Message} {response.Data}");
                 });
             };
 
             _management.ErrorOccurred += message =>
             {
-                Dispatcher.Invoke(() => AppendLog($"Lỗi server: {message}"));
+                RunOnUiThread(() =>
+                {
+                    AppendLog("Lỗi Server: " + message);
+                });
+            };
+
+            _management.ClientUpdated += client =>
+            {
+                RunOnUiThread(() => UpdateClient(client));
+            };
+
+            _management.ServerStarted += () =>
+            {
+                RunOnUiThread(() =>
+                {
+                    if (_isClosing)
+                    {
+                        return;
+                    }
+
+                    _serverRunning = true;
+
+                    StatusText.Text =
+                        "Máy quản lý đang lắng nghe cổng 5000";
+
+                    SendCommandButton.IsEnabled = true;
+
+                    AppendLog("Server đã khởi động.");
+                });
+            };
+            _management.ServerStartFailed += message =>
+            {
+                RunOnUiThread(() =>
+                {
+                    _serverRunning = false;
+                    SendCommandButton.IsEnabled = false;
+
+                    if (!_isClosing)
+                    {
+                        StatusText.Text = "Khởi động Server thất bại";
+                    }
+
+                    AppendLog("Không thể khởi động Server: " + message);
+                });
             };
         }
+        private void RunOnUiThread(Action action)
+        {
+            if (Dispatcher.HasShutdownStarted ||
+                Dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
 
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_isClosed)
+                {
+                    return;
+                }
+
+                action();
+            }));
+        }
         private void AddClient(ConnectedClient client)
         {
+            if (_removedSessions.Contains(client.SessionId))
+            {
+                return;
+            }
+
+            foreach (ListBoxItem item in ClientList.Items)
+            {
+                if (item.Tag as string == client.SessionId)
+                {
+                    return;
+                }
+            }
             ClientList.Items.Add(new ListBoxItem
             {
                 Content = client.ToString(),
@@ -74,6 +160,7 @@ namespace Server.Presentation
 
         private void RemoveClient(string sessionId)
         {
+            _removedSessions.Add(sessionId);
             object? item = ClientList.Items
                 .Cast<object>()
                 .FirstOrDefault(x => x is ListBoxItem listItem
@@ -88,7 +175,7 @@ namespace Server.Presentation
 
         private async void OnSendCommandClick(object sender, RoutedEventArgs e)
         {
-            if (_isSending)
+            if (_isSending || _isClosing || !_serverRunning)
             {
                 return;
             }
@@ -127,7 +214,25 @@ namespace Server.Presentation
             finally
             {
                 _isSending = false;
-                SendCommandButton.IsEnabled = true;
+
+                if (!_isClosed)
+                {
+                    SendCommandButton.IsEnabled =
+                        _serverRunning && !_isClosing;
+                }
+            }
+        }
+        private void UpdateClient(ConnectedClient client)
+        {
+            foreach (ListBoxItem item in ClientList.Items)
+            {
+                string? sessionId = item.Tag as string;
+
+                if (sessionId == client.SessionId)
+                {
+                    item.Content = client.ToString();
+                    break;
+                }
             }
         }
 
@@ -144,7 +249,42 @@ namespace Server.Presentation
 
         private void OnClosed(object? sender, EventArgs e)
         {
+            _isClosed = true;
+
             _management.Stop();
+        }
+        private async void OnClosing( object? sender,System.ComponentModel.CancelEventArgs e)
+        {
+            if (_canClose)
+            {
+                return;
+            }
+
+            e.Cancel = true;
+
+            if (_isClosing)
+            {
+                return;
+            }
+
+            _isClosing = true;
+            _serverRunning = false;
+            SendCommandButton.IsEnabled = false;
+            StatusText.Text = "Đang dừng Server...";
+
+            try
+            {
+                await _management.StopAsync();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Lỗi khi dừng: " + ex.Message);
+            }
+            finally
+            {
+                _canClose = true;
+                Close();
+            }
         }
     }
 }

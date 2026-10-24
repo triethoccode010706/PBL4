@@ -18,7 +18,13 @@ namespace Server
                 connectionManager,
                 dispatcherFactory: ProtocolServices.CreateServerDispatcher);
 
-            _management = new ManagementService(server, connectionManager);
+            var clientManager = new ClientManager();
+            IHeartbeatService heartbeatService =new HeartbeatService(connectionManager,clientManager);
+
+            _management = new ManagementService(
+                server,
+                connectionManager,
+                clientManager,heartbeatService);
 
             var window = new MainWindow(_management);
             window.Show();
