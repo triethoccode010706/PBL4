@@ -7,12 +7,13 @@ namespace Client.Application
 {
     public static class ClientDispatcherFactory
     {
-        public static CommandDispatcher Create(IMachineInfoProvider machineInfoProvider)
+        public static CommandDispatcher Create( IMachineInfoProvider machineInfoProvider,string secretKey)
         {
             var dispatcher = new CommandDispatcher();
             dispatcher.Register(new PingCommandHandler());
             dispatcher.Register(new DisconnectCommandHandler());
             dispatcher.Register(new GetInfoCommandHandler(machineInfoProvider));
+            dispatcher.Register(new AuthenticateCommandHandler(secretKey));
             dispatcher.RegisterNotImplemented(
                 CommandType.START_SCREEN,
                 CommandType.STOP_SCREEN,

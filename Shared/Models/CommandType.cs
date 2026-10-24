@@ -10,6 +10,7 @@ namespace Shared.Models
         MOUSE_CLICK = 6,
         KEY_DOWN = 7,
         KEY_UP = 8,
-        DISCONNECT = 9
+        DISCONNECT = 9,
+        AUTHENTICATE = 10
     }
 }

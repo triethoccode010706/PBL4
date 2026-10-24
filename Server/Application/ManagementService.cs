@@ -2,6 +2,7 @@ using Server.Domain;
 using Server.Infrastructure;
 using Shared.Models;
 using System.Text.Json;
+using Shared.Security;
 namespace Server.Application
 {
     public sealed class ManagementService : IManagementService
@@ -17,6 +18,7 @@ namespace Server.Application
         private bool _isStopping;
 
         private readonly List<Task> _initialInfoTasks = new();
+        private readonly IAuthenticationService _authenticationService;
         public event Action<ConnectedClient>? ClientConnected; 
         public event Action<ConnectedClient>? ClientUpdated;
         public event Action<string>? ClientDisconnected;
@@ -26,12 +28,14 @@ namespace Server.Application
         public event Action? ServerStarted;
         public event Action<string>? ServerStartFailed;
 
-        public ManagementService(IServer server,IConnectionManager connectionManager,IClientManager clientManager,IHeartbeatService heartbeatService)
+        public ManagementService(IServer server,IConnectionManager connectionManager,IClientManager clientManager,
+            IHeartbeatService heartbeatService, IAuthenticationService authenticationService)
         {
             _server = server;
             _clientManager = clientManager;
-            _heartbeatService = heartbeatService;
+            _heartbeatService = heartbeatService;   
             _connectionManager = connectionManager;
+            _authenticationService = authenticationService;
             connectionManager.SessionAdded += session =>
             {
                 var client = new ConnectedClient(
@@ -349,6 +353,60 @@ namespace Server.Application
         }
         private async Task LoadInitialInfoAsync(string sessionId)
         {
+            IClientSession? session =
+                _connectionManager.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return;
+            }
+
+            try
+            {
+                bool authenticated =
+                    await _authenticationService.AuthenticateAsync(
+                        session,
+                        _cts.Token);
+
+                if (!authenticated)
+                {
+                    _connectionManager.RemoveSession(sessionId);
+
+                    ErrorOccurred?.Invoke(
+                        $"Client {sessionId} xác thực thất bại.");
+
+                    return;
+                }
+
+                // Server có thể đang dừng khi kết quả vừa về.
+                _cts.Token.ThrowIfCancellationRequested();
+
+                session.MarkAuthenticated();
+            }
+            catch (OperationCanceledException)
+            {
+                _connectionManager.RemoveSession(sessionId);
+
+                if (!_cts.IsCancellationRequested)
+                {
+                    ErrorOccurred?.Invoke(
+                        $"Client {sessionId} xác thực quá hạn.");
+                }
+
+                return;
+            }
+            catch (Exception ex)
+            {
+                _connectionManager.RemoveSession(sessionId);
+
+                ErrorOccurred?.Invoke(
+                    $"Không xác thực được Client {sessionId}: "
+                    + ex.Message);
+
+                return;
+            }
+
+            // Chỉ lấy thông tin sau khi xác thực thành công.
             try
             {
                 await SendCommandAsync(
@@ -358,7 +416,7 @@ namespace Server.Application
             }
             catch (OperationCanceledException)
             {
-                // Server đang dừng hoặc phiên đã kết thúc.
+                // Server dừng hoặc phiên kết thúc.
             }
             catch (Exception ex)
             {

@@ -10,13 +10,17 @@ namespace Shared.Protocol
 {
     public static class CommandAuthorization
     {
-        public static bool CanExecute(
-            CommandType commandType,
-            AuthenticationStatus authenticationStatus)
+        public static bool CanExecute( CommandType commandType,AuthenticationStatus authenticationStatus)
         {
             if (commandType == CommandType.DISCONNECT)
             {
                 return true;
+            }
+
+            if (commandType == CommandType.AUTHENTICATE)
+            {
+                return authenticationStatus ==
+                    AuthenticationStatus.NotAuthenticated;
             }
 
             if (authenticationStatus !=
@@ -25,7 +29,7 @@ namespace Shared.Protocol
                 return false;
             }
 
-            return true;
+            return Enum.IsDefined(typeof(CommandType), commandType);
         }
     }
 }
