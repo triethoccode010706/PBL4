@@ -8,7 +8,7 @@ namespace Server.Infrastructure
         event Action<string, Response>? ResponseReceived;
         event Action<string, Command>? CommandReceived;
         event Action<string, Response>? ResponseSent;
-
+        Task WaitForSessionsAsync();
         Task<Response> SendCommandAsync(
             string sessionId,
             Command command,
