@@ -37,6 +37,12 @@ namespace Server.Application
 
                     foreach (var session in _connections.GetSessions())
                     {
+                        if (session.AuthStatus !=
+                            AuthenticationStatus.Authenticated)
+                        {
+                            continue;
+                        }
+
                         Task task = CheckClientAsync(
                             session,
                             cancellationToken);

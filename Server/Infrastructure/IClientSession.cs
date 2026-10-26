@@ -8,7 +8,9 @@ namespace Server.Infrastructure
         string SessionId { get; }
         bool IsConnected { get; }
         string RemoteEndPoint { get; }
+        AuthenticationStatus AuthStatus { get; }
 
+        void MarkAuthenticated();
         Task<Response> SendCommandAsync(
             Command command,
             CancellationToken cancellationToken = default);

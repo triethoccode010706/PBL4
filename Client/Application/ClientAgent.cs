@@ -22,6 +22,17 @@ namespace Client.Application
             int port,
             CancellationToken cancellationToken = default)
         {
+            string? secretKey =Environment.GetEnvironmentVariable("PBL4_AUTH_KEY");
+
+            if (string.IsNullOrWhiteSpace(secretKey))
+            {
+                throw new InvalidOperationException(
+                    "Chưa cấu hình biến môi trường PBL4_AUTH_KEY.");
+            }
+
+            var dispatcher = ClientDispatcherFactory.Create(
+                _machineInfoProvider,
+                secretKey);
             bool connected = await _tcpClient.ConnectAsync(serverIp, port, cancellationToken);
             if (!connected)
             {
@@ -29,10 +40,7 @@ namespace Client.Application
                 return;
             }
 
-            var protocol = new ProtocolSession(
-                _tcpClient,
-                _tcpClient.Stream,
-                ClientDispatcherFactory.Create(_machineInfoProvider));
+            var protocol = new ProtocolSession(_tcpClient, _tcpClient.Stream, dispatcher);
 
             protocol.CommandReceived += command =>
                 WriteLog($"[Máy quản lý] {command.Type} (id={command.RequestId})");
@@ -41,7 +49,7 @@ namespace Client.Application
             {
                 if (response.Success)
                 {
-                    WriteLog($"[OK] {response.Message} {response.Data}".Trim());
+                    WriteLog($"[OK] {response.Message}");
                 }
                 else
                 {

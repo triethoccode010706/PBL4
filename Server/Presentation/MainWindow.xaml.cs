@@ -3,7 +3,9 @@ using System.Windows.Controls;
 using Server.Application;
 using Server.Domain;
 using Shared.Models;
-
+using System.IO;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 namespace Server.Presentation
 {
     public partial class MainWindow : Window
@@ -57,10 +59,9 @@ namespace Server.Presentation
                     string status = response.Success
                         ? "OK"
                         : $"LỖI {response.ErrorCode}";
+                    AppendLog( $"← {ShortId(sessionId)}: {status} "  + $"{response.Message}");
 
-                    AppendLog(
-                        $"← {ShortId(sessionId)}: {status} "
-                        + $"{response.Message} {response.Data}");
+
                 });
             };
 
@@ -201,7 +202,21 @@ namespace Server.Presentation
 
             try
             {
-                await _management.SendCommandAsync(sessionId, commandType);
+                Response response =await _management.SendCommandAsync(  sessionId, commandType);
+
+                if (commandType == CommandType.CAPTURE_SCREEN)
+                {
+                    if (!response.Success)
+                    {
+                        AppendLog("Chụp màn hình thất bại: " + response.Message);
+                        return;
+                    }
+
+                    if (!_isClosing && !_isClosed)
+                    {
+                        ShowScreenshot(sessionId, response.Data);
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -285,6 +300,41 @@ namespace Server.Presentation
                 _canClose = true;
                 Close();
             }
+        }
+        private void ShowScreenshot( string sessionId, string base64)
+        {
+            byte[] imageBytes = Convert.FromBase64String(base64);
+
+            using var stream = new MemoryStream(imageBytes);
+
+            var bitmap = new BitmapImage();
+
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+
+            // Giới hạn kích thước giải mã cho cửa sổ xem thử.
+            bitmap.DecodePixelWidth = 1600;
+
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            var imageControl = new Image
+            {
+                Source = bitmap,
+                Stretch = Stretch.Uniform
+            };
+
+            var preview = new Window
+            {
+                Title = "Màn hình Client " + ShortId(sessionId),
+                Width = 1000,
+                Height = 650,
+                Owner = this,
+                Content = imageControl
+            };
+
+            preview.Show();
         }
     }
 }

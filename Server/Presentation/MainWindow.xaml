@@ -37,6 +37,7 @@
                     <ComboBoxItem Content="START_SCREEN" Tag="START_SCREEN" />
                     <ComboBoxItem Content="STOP_SCREEN" Tag="STOP_SCREEN" />
                     <ComboBoxItem Content="DISCONNECT" Tag="DISCONNECT" />
+                    <ComboBoxItem Content="CAPTURE_SCREEN" Tag="CAPTURE_SCREEN"/>
                 </ComboBox>
                 <Button x:Name="SendCommandButton"
                         Margin="8,0,0,0"

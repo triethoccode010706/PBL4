@@ -14,7 +14,7 @@ namespace Shared.Protocol
         private readonly CommandDispatcher _dispatcher;
         private readonly TimeSpan _requestTimeout;
         private readonly ConcurrentDictionary<string, TaskCompletionSource<Response>> _pending = new();
-
+        public AuthenticationStatus AuthStatus { get; private set; }= AuthenticationStatus.NotAuthenticated;
         public event Action<Command>? CommandSent;
         public event Action<Command>? CommandReceived;
         public event Action<Response>? ResponseReceived;
@@ -200,6 +200,32 @@ namespace Shared.Protocol
                     pending.TrySetCanceled();
                 }
             }
+        }
+        public void MarkAuthenticated()
+        {
+            if (AuthStatus != AuthenticationStatus.NotAuthenticated)
+            {
+                throw new InvalidOperationException(
+                    "Phiên không ở trạng thái chờ xác thực.");
+            }
+
+            AuthStatus = AuthenticationStatus.Authenticated;
+        }
+
+        public void MarkAuthenticationFailed()
+        {
+            if (AuthStatus != AuthenticationStatus.NotAuthenticated)
+            {
+                return;
+            }
+
+            AuthStatus = AuthenticationStatus.Failed;
+        }
+        private bool CanExecuteCommand(Command command)
+        {
+            return CommandAuthorization.CanExecute(
+                command.Type,
+                AuthStatus);
         }
     }
 }

@@ -44,7 +44,13 @@ namespace Server.Infrastructure
             {
                 throw new InvalidOperationException("Session đã ngắt kết nối.");
             }
+            bool allowed = CommandAuthorization.CanExecute(command.Type,AuthStatus);
 
+            if (!allowed)
+            {
+                throw new InvalidOperationException(
+                    "Phiên chưa được phép thực hiện lệnh này.");
+            }
             return await _protocol.SendCommandAsync(command, cancellationToken);
         }
 
@@ -150,6 +156,31 @@ namespace Server.Infrastructure
         private static bool IsConnectionLost(Exception ex)
         {
             return ex is IOException or ObjectDisposedException or SocketException;
+        }
+        public AuthenticationStatus AuthStatus
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _protocol?.AuthStatus
+                        ?? AuthenticationStatus.NotAuthenticated;
+                }
+            }
+        }
+
+        public void MarkAuthenticated()
+        {
+            lock (_sync)
+            {
+                if (!_isConnected || _protocol == null)
+                {
+                    throw new InvalidOperationException(
+                        "Session đã ngắt kết nối.");
+                }
+
+                _protocol.MarkAuthenticated();
+            }
         }
     }
 }
