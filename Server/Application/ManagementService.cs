@@ -1,8 +1,9 @@
 using Server.Domain;
 using Server.Infrastructure;
 using Shared.Models;
-using System.Text.Json;
 using Shared.Security;
+using System.Text.Json;
+
 namespace Server.Application
 {
     public sealed class ManagementService : IManagementService
@@ -10,16 +11,18 @@ namespace Server.Application
         private readonly IServer _server;
         private readonly IConnectionManager _connectionManager;
         private readonly CancellationTokenSource _cts = new();
-        private int _stopped;
         private readonly IHeartbeatService _heartbeatService;
-        private Task? _runTask;
         private readonly IClientManager _clientManager;
-        private readonly object _initialInfoLock = new();
-        private bool _isStopping;
-
-        private readonly List<Task> _initialInfoTasks = new();
         private readonly IAuthenticationService _authenticationService;
-        public event Action<ConnectedClient>? ClientConnected; 
+
+        private readonly object _initialInfoLock = new();
+        private readonly List<Task> _initialInfoTasks = new();
+
+        private int _stopped;
+        private bool _isStopping;
+        private Task? _runTask;
+
+        public event Action<ConnectedClient>? ClientConnected;
         public event Action<ConnectedClient>? ClientUpdated;
         public event Action<string>? ClientDisconnected;
         public event Action<string, Command>? CommandSent;
@@ -29,15 +32,20 @@ namespace Server.Application
         public event Action<string>? ServerStartFailed;
         public event Action<string, ScreenFrame>? ScreenFrameReceived;
 
-        public ManagementService(IServer server,IConnectionManager connectionManager,IClientManager clientManager,
-            IHeartbeatService heartbeatService, IAuthenticationService authenticationService)
+        public ManagementService(
+            IServer server,
+            IConnectionManager connectionManager,
+            IClientManager clientManager,
+            IHeartbeatService heartbeatService,
+            IAuthenticationService authenticationService)
         {
             _server = server;
-            _clientManager = clientManager;
-            _heartbeatService = heartbeatService;   
             _connectionManager = connectionManager;
+            _clientManager = clientManager;
+            _heartbeatService = heartbeatService;
             _authenticationService = authenticationService;
-            connectionManager.SessionAdded += session =>
+
+            _connectionManager.SessionAdded += session =>
             {
                 var client = new ConnectedClient(
                     session.SessionId,
@@ -59,16 +67,17 @@ namespace Server.Application
                         return;
                     }
 
-                    _initialInfoTasks.RemoveAll(task => task.IsCompleted);
+                    _initialInfoTasks.RemoveAll(
+                        task => task.IsCompleted);
 
-                    Task task = Task.Run(() =>
-                        LoadInitialInfoAsync(session.SessionId));
+                    Task task = Task.Run(
+                        () => LoadInitialInfoAsync(session.SessionId));
 
                     _initialInfoTasks.Add(task);
                 }
             };
 
-            connectionManager.SessionRemoved += sessionId =>
+            _connectionManager.SessionRemoved += sessionId =>
             {
                 bool removed = _clientManager.RemoveClient(sessionId);
 
@@ -87,12 +96,15 @@ namespace Server.Application
             {
                 ResponseReceived?.Invoke(sessionId, response);
             };
+
             _clientManager.ClientUpdated += client =>
             {
                 ClientUpdated?.Invoke(client);
             };
+
             _server.ScreenFrameReceived += OnScreenFrameReceived;
         }
+
         public void Start()
         {
             if (_runTask != null)
@@ -110,18 +122,18 @@ namespace Server.Application
                 return;
             }
 
+            lock (_initialInfoLock)
+            {
+                _isStopping = true;
+            }
+
             try
             {
-                lock (_initialInfoLock)
-                {
-                    _isStopping = true;
-                    
-                }
                 _cts.Cancel();
             }
             catch (ObjectDisposedException)
             {
-                // Tác vụ đã kết thúc và giải phóng token source.
+                // CancellationTokenSource đã được giải phóng.
             }
 
             _server.Stop();
@@ -136,32 +148,34 @@ namespace Server.Application
                 await _runTask;
             }
         }
+
         private async Task RunAsync()
         {
             Task? serverTask = null;
             Task? heartbeatTask = null;
             Task? timeoutTask = null;
+
             bool serverStarted = false;
+
             try
             {
                 serverTask = _server.StartAsync(_cts.Token);
 
-                // Với TcpServer hiện tại, lỗi mở listener được
-                // trả về trong task trước khi vòng accept chờ.
                 if (serverTask.IsCompleted)
                 {
                     await serverTask;
                     return;
                 }
+
                 serverStarted = true;
                 ServerStarted?.Invoke();
 
                 heartbeatTask =
                     _heartbeatService.RunAsync(_cts.Token);
-                timeoutTask = CheckTimeoutsAsync(_cts.Token);
 
-                // Theo dõi cả hai: nếu một tác vụ kết thúc,
-                // bắt đầu dừng toàn bộ.
+                timeoutTask =
+                    CheckTimeoutsAsync(_cts.Token);
+
                 Task completedTask = await Task.WhenAny(
                     serverTask,
                     heartbeatTask,
@@ -172,7 +186,7 @@ namespace Server.Application
             catch (OperationCanceledException)
                 when (_cts.IsCancellationRequested)
             {
-                // Dừng theo yêu cầu.
+                // Server dừng theo yêu cầu.
             }
             catch (Exception ex)
             {
@@ -192,7 +206,15 @@ namespace Server.Application
                     _isStopping = true;
                 }
 
-                _cts.Cancel();
+                try
+                {
+                    _cts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Token source đã được giải phóng.
+                }
+
                 _server.Stop();
 
                 try
@@ -202,18 +224,18 @@ namespace Server.Application
                         await serverTask;
                     }
                 }
-
                 catch (Exception)
                 {
-                    // Lỗi đã được quan sát; vẫn tiếp tục dọn heartbeat.
+                    // Tiếp tục dọn dẹp các tác vụ khác.
                 }
+
                 try
                 {
                     await _server.WaitForSessionsAsync();
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(
+                    ErrorOccurred?.Invoke(
                         "Lỗi khi chờ các session kết thúc: " + ex.Message);
                 }
 
@@ -224,10 +246,15 @@ namespace Server.Application
                         await heartbeatTask;
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    // Heartbeat đã dừng.
+                }
                 catch (Exception)
                 {
-                    // Vẫn hoàn tất dọn tài nguyên.
+                    // Tiếp tục dọn dẹp.
                 }
+
                 try
                 {
                     if (timeoutTask != null)
@@ -235,10 +262,15 @@ namespace Server.Application
                         await timeoutTask;
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    // Kiểm tra timeout đã dừng.
+                }
                 catch (Exception)
                 {
-                    // Tiếp tục hoàn tất dọn tài nguyên.
+                    // Tiếp tục dọn dẹp.
                 }
+
                 Task[] initialInfoTasks;
 
                 lock (_initialInfoLock)
@@ -246,22 +278,38 @@ namespace Server.Application
                     initialInfoTasks = _initialInfoTasks.ToArray();
                 }
 
-                await Task.WhenAll(initialInfoTasks);
+                try
+                {
+                    await Task.WhenAll(initialInfoTasks);
+                }
+                catch (Exception)
+                {
+                    // Các tác vụ khởi tạo đã được quan sát.
+                }
+
                 _cts.Dispose();
             }
         }
-        private void UpdateClientInfo(string sessionId, string json)
+
+        private void UpdateClientInfo(
+            string sessionId,
+            string json)
         {
             MachineInfoDto? info;
 
             try
             {
-                info = JsonSerializer.Deserialize<MachineInfoDto>(json);
+                info = JsonSerializer.Deserialize<MachineInfoDto>(
+                    json,
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
                 ErrorOccurred?.Invoke(
-                    "GET_INFO trả về dữ liệu JSON không hợp lệ.");
+                    $"GET_INFO trả về dữ liệu JSON không hợp lệ: {ex.Message}");
 
                 return;
             }
@@ -270,29 +318,36 @@ namespace Server.Application
                 string.IsNullOrWhiteSpace(info.MachineName))
             {
                 ErrorOccurred?.Invoke(
-                    "GET_INFO thiếu tên máy.");
+                    "GET_INFO thiếu tên máy hoặc dữ liệu không hợp lệ.");
 
                 return;
             }
 
-            bool updated = _clientManager.UpdateMachineName(
+            bool updated = _clientManager.UpdateSystemInfo(
                 sessionId,
-                info.MachineName);
+                info.MachineName,
+                info.UserName ?? string.Empty,
+                info.IpAddress ?? string.Empty,
+                info.OsDescription ?? string.Empty,
+                info.CpuInfo ?? string.Empty,
+                info.RamInfo ?? string.Empty);
 
             if (!updated)
             {
+                ErrorOccurred?.Invoke(
+                    $"Không thể cập nhật thông tin Client có session {sessionId}.");
+
                 return;
             }
 
-            ConnectedClient? client =
-                _clientManager.GetClient(sessionId);
-
-            if (client != null)
-            {
-                ClientUpdated?.Invoke(client);
-            }
+            // ClientUpdated được phát qua _clientManager.ClientUpdated.
+            // Không gọi ClientUpdated?.Invoke(client) lần nữa ở đây.
         }
-        public async Task<Response> SendCommandAsync( string sessionId,CommandType commandType,CancellationToken cancellationToken = default)
+
+        public async Task<Response> SendCommandAsync(
+            string sessionId,
+            CommandType commandType,
+            CancellationToken cancellationToken = default)
         {
             Command command = Command.Create(commandType);
 
@@ -301,11 +356,14 @@ namespace Server.Application
                 command,
                 cancellationToken);
 
-            if (commandType == CommandType.GET_INFO && response.Success)
+            if (commandType == CommandType.GET_INFO &&
+                response.Success)
             {
                 UpdateClientInfo(sessionId, response.Data);
             }
-            if (commandType == CommandType.PING && response.Success)
+
+            if (commandType == CommandType.PING &&
+                response.Success)
             {
                 _clientManager.UpdateHeartbeat(
                     sessionId,
@@ -315,7 +373,8 @@ namespace Server.Application
             return response;
         }
 
-        private async Task CheckTimeoutsAsync(CancellationToken cancellationToken)
+        private async Task CheckTimeoutsAsync(
+            CancellationToken cancellationToken)
         {
             using var timer =
                 new PeriodicTimer(TimeSpan.FromSeconds(1));
@@ -353,6 +412,7 @@ namespace Server.Application
                 // Dừng kiểm tra khi Server dừng.
             }
         }
+
         private async Task LoadInitialInfoAsync(string sessionId)
         {
             IClientSession? session =
@@ -380,7 +440,6 @@ namespace Server.Application
                     return;
                 }
 
-                // Server có thể đang dừng khi kết quả vừa về.
                 _cts.Token.ThrowIfCancellationRequested();
 
                 session.MarkAuthenticated();
@@ -402,13 +461,11 @@ namespace Server.Application
                 _connectionManager.RemoveSession(sessionId);
 
                 ErrorOccurred?.Invoke(
-                    $"Không xác thực được Client {sessionId}: "
-                    + ex.Message);
+                    $"Không xác thực được Client {sessionId}: {ex.Message}");
 
                 return;
             }
 
-            // Chỉ lấy thông tin sau khi xác thực thành công.
             try
             {
                 await SendCommandAsync(
@@ -427,7 +484,10 @@ namespace Server.Application
                     + ex.Message);
             }
         }
-        private void OnScreenFrameReceived(string sessionId,ScreenFrame frame)
+
+        private void OnScreenFrameReceived(
+            string sessionId,
+            ScreenFrame frame)
         {
             IClientSession? session =
                 _connectionManager.GetSession(sessionId);

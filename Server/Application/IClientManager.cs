@@ -21,5 +21,16 @@ namespace Server.Application
         bool UpdateHeartbeat(string sessionId, DateTime heartbeatAt);
         IReadOnlyList<ConnectedClient> GetTimedOutClients(TimeSpan timeout,DateTime now);
         event Action<ConnectedClient>? ClientUpdated;
+
+
+        bool UpdateSystemInfo(
+            string sessionId,
+            string machineName,
+            string userName,
+            string ipAddress,
+            string osDescription,
+            string cpuInfo,
+            string ramInfo);
+
     }
 }
