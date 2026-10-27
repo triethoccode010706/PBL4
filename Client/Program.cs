@@ -1,6 +1,8 @@
 ﻿using Client.Application;
 using Client.Infrastructure;
 using Client.Domain;
+using Shared.Network;
+using Shared.Protocol;
 class Program
 {
     static async Task Main(string[] args)
@@ -17,8 +19,6 @@ class Program
         {
             try
             {
-                System.Windows.Forms.Application.SetHighDpiMode(
-                    System.Windows.Forms.HighDpiMode.PerMonitorV2);
 
                 IScreenCapture capture = new ScreenCaptureService();
 
@@ -50,7 +50,25 @@ class Program
 
             return;
         }
-        IClientAgent agent = new ClientAgent(new TcpClientService(), new MachineInfoProvider());
+        var tcpClient = new TcpClientService();
+
+        IScreenCapture screenCapture =
+            new ScreenCaptureService();
+
+        IScreenFrameSender frameSender =
+            new ScreenFrameSender(tcpClient);
+
+        IScreenStreamingService streaming =
+            new ScreenStreamingService(
+                screenCapture,
+                frameSender);
+
+        IClientAgent agent = new ClientAgent(
+            tcpClient,
+            new MachineInfoProvider(),
+            screenCapture,
+            streaming);
+
         agent.Log += Console.WriteLine;
 
         try

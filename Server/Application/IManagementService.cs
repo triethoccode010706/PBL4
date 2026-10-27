@@ -13,6 +13,7 @@ namespace Server.Application
         event Action<string>? ErrorOccurred;
         event Action? ServerStarted;
         event Action<string>? ServerStartFailed;
+        event Action<string, ScreenFrame>? ScreenFrameReceived;
         Task StopAsync();
         void Start();
         void Stop();

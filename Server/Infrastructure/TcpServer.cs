@@ -22,7 +22,7 @@ namespace Server.Infrastructure
         public event Action<string, Response>? ResponseReceived;
         public event Action<string, Command>? CommandReceived;
         public event Action<string, Response>? ResponseSent;
-
+        public event Action<string, ScreenFrame>? ScreenFrameReceived;
         public TcpServer(
             int port,
             IConnectionManager connectionManager,
@@ -197,6 +197,12 @@ namespace Server.Infrastructure
             protocol.ResponseReceived += response => ResponseReceived?.Invoke(session.SessionId, response);
             protocol.CommandReceived += command => CommandReceived?.Invoke(session.SessionId, command);
             protocol.ResponseSent += response => ResponseSent?.Invoke(session.SessionId, response);
+            protocol.ScreenFrameReceived += frame =>
+            {
+                ScreenFrameReceived?.Invoke(
+                    session.SessionId,
+                    frame);
+            };
             return protocol;
         }
         public async Task WaitForSessionsAsync()

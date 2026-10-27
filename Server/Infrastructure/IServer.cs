@@ -1,5 +1,4 @@
 ﻿using Shared.Models;
-
 namespace Server.Infrastructure
 {
     public interface IServer
@@ -8,6 +7,7 @@ namespace Server.Infrastructure
         event Action<string, Response>? ResponseReceived;
         event Action<string, Command>? CommandReceived;
         event Action<string, Response>? ResponseSent;
+        event Action<string, ScreenFrame>? ScreenFrameReceived;
         Task WaitForSessionsAsync();
         Task<Response> SendCommandAsync(
             string sessionId,

@@ -19,7 +19,7 @@ namespace Shared.Protocol
         public event Action<Command>? CommandReceived;
         public event Action<Response>? ResponseReceived;
         public event Action<Response>? ResponseSent;
-
+        public event Action<ScreenFrame>? ScreenFrameReceived;
         public ProtocolSession(
             IDataSender sender,
             Stream stream,
@@ -137,6 +137,10 @@ namespace Shared.Protocol
                     {
                         HandleInboundResponse(envelope.Response);
                     }
+                    else if (envelope.Kind == ProtocolMessageKinds.ScreenFrame && envelope.ScreenFrame != null)
+                    {
+                        ScreenFrameReceived?.Invoke(envelope.ScreenFrame);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -226,6 +230,22 @@ namespace Shared.Protocol
             return CommandAuthorization.CanExecute(
                 command.Type,
                 AuthStatus);
+        }
+        public async Task SendScreenFrameAsync( ScreenFrame frame,CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var envelope = new ProtocolEnvelope
+            {
+                Kind = ProtocolMessageKinds.ScreenFrame,
+                ScreenFrame = frame
+            };
+
+            _validator.ValidateEnvelope(envelope);
+
+            await WriteEnvelopeAsync(
+                envelope,
+                cancellationToken);
         }
     }
 }
