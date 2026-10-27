@@ -1,20 +1,22 @@
 using Client.Domain;
 using Client.Infrastructure;
 using Shared.Protocol;
-
 namespace Client.Application
 {
     public sealed class ClientAgent : IClientAgent
     {
         private readonly ITcpClient _tcpClient;
         private readonly IMachineInfoProvider _machineInfoProvider;
-
+        private readonly IScreenCapture _screenCapture;
+        private readonly IScreenStreamingService _streaming;
         public event Action<string>? Log;
 
-        public ClientAgent(ITcpClient tcpClient, IMachineInfoProvider machineInfoProvider)
+        public ClientAgent(ITcpClient tcpClient,IMachineInfoProvider machineInfoProvider,IScreenCapture screenCapture,IScreenStreamingService streaming)
         {
             _tcpClient = tcpClient;
             _machineInfoProvider = machineInfoProvider;
+            _screenCapture = screenCapture;
+            _streaming = streaming;
         }
 
         public async Task RunAsync(
@@ -30,9 +32,7 @@ namespace Client.Application
                     "Chưa cấu hình biến môi trường PBL4_AUTH_KEY.");
             }
 
-            var dispatcher = ClientDispatcherFactory.Create(
-                _machineInfoProvider,
-                secretKey);
+            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture, _streaming, cancellationToken);
             bool connected = await _tcpClient.ConnectAsync(serverIp, port, cancellationToken);
             if (!connected)
             {
@@ -65,7 +65,14 @@ namespace Client.Application
             }
             finally
             {
-                _tcpClient.Disconnect();
+                try
+                {
+                    await _streaming.StopAsync();
+                }
+                finally
+                {
+                    _tcpClient.Disconnect();
+                }
             }
         }
 

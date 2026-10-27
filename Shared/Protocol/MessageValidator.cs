@@ -17,10 +17,10 @@ namespace Shared.Protocol
                 {
                     throw new ProtocolValidationException("Envelope command thiếu nội dung.");
                 }
-
-                if (envelope.Response != null)
+                if (envelope.Response != null || envelope.ScreenFrame != null)
                 {
-                    throw new ProtocolValidationException("Envelope command không được kèm response.");
+                    throw new ProtocolValidationException(
+                        "Envelope command không được kèm nội dung khác.");
                 }
 
                 ValidateCommand(envelope.Command);
@@ -34,12 +34,31 @@ namespace Shared.Protocol
                     throw new ProtocolValidationException("Envelope response thiếu nội dung.");
                 }
 
-                if (envelope.Command != null)
+                if (envelope.Command != null || envelope.ScreenFrame != null)
                 {
-                    throw new ProtocolValidationException("Envelope response không được kèm command.");
+                    throw new ProtocolValidationException(
+                        "Envelope response không được kèm nội dung khác.");
                 }
 
                 ValidateResponse(envelope.Response);
+                return;
+            }
+            if (envelope.Kind == ProtocolMessageKinds.ScreenFrame)
+            {
+                if (envelope.ScreenFrame == null)
+                {
+                    throw new ProtocolValidationException(
+                        "Envelope ảnh thiếu nội dung.");
+                }
+
+                if (envelope.Command != null || envelope.Response != null)
+                {
+                    throw new ProtocolValidationException(
+                        "Envelope ảnh không được kèm command hoặc response.");
+                }
+
+                ValidateScreenFrame(envelope.ScreenFrame);
+
                 return;
             }
 
@@ -94,6 +113,22 @@ namespace Shared.Protocol
             if (data != null && data.Length > MaxDataLength)
             {
                 throw new ProtocolValidationException("Trường Data vượt giới hạn.");
+            }
+        }
+        public void ValidateScreenFrame(ScreenFrame frame)
+        {
+            if (frame.ImageData == null || frame.ImageData.Length == 0)
+            {
+                throw new ProtocolValidationException(
+                    "Ảnh không được rỗng.");
+            }
+
+            const int maxImageSize = 512 * 1024;
+
+            if (frame.ImageData.Length > maxImageSize)
+            {
+                throw new ProtocolValidationException(
+                    "Ảnh vượt giới hạn 512 KiB.");
             }
         }
     }

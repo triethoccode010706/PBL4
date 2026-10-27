@@ -6,6 +6,7 @@ using Shared.Models;
 using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Collections.Concurrent;
 namespace Server.Presentation
 {
     public partial class MainWindow : Window
@@ -17,6 +18,9 @@ namespace Server.Presentation
         private bool _isClosed;
         private readonly HashSet<string> _removedSessions = new();
         private bool _serverRunning;
+        private readonly Dictionary<string, ScreenPreviewWindow> _screenWindows = new();
+
+        private readonly ConcurrentDictionary<string, byte>  _pendingFrameUpdates = new();
         public MainWindow(IManagementService management)
         {
             _management = management;
@@ -29,6 +33,31 @@ namespace Server.Presentation
             _management.Start();
             Closing += OnClosing;
         }
+            private void OpenScreenPreview(string sessionId)
+        {
+            if (_screenWindows.TryGetValue(
+                sessionId,
+                out var existingWindow))
+            {
+                existingWindow.Activate();
+                return;
+            }
+
+            var window = new ScreenPreviewWindow(
+                ShortId(sessionId));
+
+            window.Owner = this;
+
+            window.Closed += (_, _) =>
+            {
+                _screenWindows.Remove(sessionId);
+            };
+
+            _screenWindows.Add(sessionId, window);
+
+            window.Show();
+        }
+        
 
         private void BindApplicationEvents()
         {
@@ -112,6 +141,45 @@ namespace Server.Presentation
                     AppendLog("Không thể khởi động Server: " + message);
                 });
             };
+            _management.ScreenFrameReceived += (sessionId, frame) =>
+            {
+                if (!_pendingFrameUpdates.TryAdd(sessionId, 0))
+                {
+                    // UI chưa xử lý xong ảnh trước:
+                    // bỏ ảnh này, không xếp hàng thêm.
+                    return;
+                }
+
+                RunOnUiThread(() =>
+                {
+                    try
+                    {
+                        if (_isClosing ||
+                            _removedSessions.Contains(sessionId))
+                        {
+                            return;
+                        }
+
+                        if (_screenWindows.TryGetValue(
+                            sessionId,
+                            out var window))
+                        {
+                            window.UpdateFrame(frame.ImageData);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog(
+                            "Không hiển thị được ảnh: " + ex.Message);
+                    }
+                    finally
+                    {
+                        _pendingFrameUpdates.TryRemove(
+                            sessionId,
+                            out _);
+                    }
+                });
+            };
         }
         private void RunOnUiThread(Action action)
         {
@@ -162,6 +230,10 @@ namespace Server.Presentation
         private void RemoveClient(string sessionId)
         {
             _removedSessions.Add(sessionId);
+            if (_screenWindows.TryGetValue( sessionId,out var window))
+            {
+                window.Close();
+            }
             object? item = ClientList.Items
                 .Cast<object>()
                 .FirstOrDefault(x => x is ListBoxItem listItem
@@ -203,6 +275,16 @@ namespace Server.Presentation
             try
             {
                 Response response =await _management.SendCommandAsync(  sessionId, commandType);
+                if (commandType == CommandType.START_SCREEN)
+                {
+                    if (response.Success &&
+                        !_isClosing &&
+                        !_isClosed &&
+                        !_removedSessions.Contains(sessionId))
+                    {
+                        OpenScreenPreview(sessionId);
+                    }
+                }
 
                 if (commandType == CommandType.CAPTURE_SCREEN)
                 {

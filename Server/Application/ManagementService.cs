@@ -27,6 +27,7 @@ namespace Server.Application
         public event Action<string>? ErrorOccurred;
         public event Action? ServerStarted;
         public event Action<string>? ServerStartFailed;
+        public event Action<string, ScreenFrame>? ScreenFrameReceived;
 
         public ManagementService(IServer server,IConnectionManager connectionManager,IClientManager clientManager,
             IHeartbeatService heartbeatService, IAuthenticationService authenticationService)
@@ -90,6 +91,7 @@ namespace Server.Application
             {
                 ClientUpdated?.Invoke(client);
             };
+            _server.ScreenFrameReceived += OnScreenFrameReceived;
         }
         public void Start()
         {
@@ -424,6 +426,24 @@ namespace Server.Application
                     $"Không lấy được thông tin Client {sessionId}: "
                     + ex.Message);
             }
+        }
+        private void OnScreenFrameReceived(string sessionId,ScreenFrame frame)
+        {
+            IClientSession? session =
+                _connectionManager.GetSession(sessionId);
+
+            if (session == null || !session.IsConnected)
+            {
+                return;
+            }
+
+            if (session.AuthStatus !=
+                AuthenticationStatus.Authenticated)
+            {
+                return;
+            }
+
+            ScreenFrameReceived?.Invoke(sessionId, frame);
         }
     }
 }
