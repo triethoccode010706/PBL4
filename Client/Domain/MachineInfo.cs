@@ -4,11 +4,9 @@ namespace Client.Domain
     {
         public string MachineName { get; init; } = string.Empty;
         public string UserName { get; init; } = string.Empty;
+        public string IpAddress { get; init; } = string.Empty;
         public string OsDescription { get; init; } = string.Empty;
-
-        public override string ToString()
-        {
-            return $"{MachineName}|{UserName}|{OsDescription}";
-        }
+        public string CpuInfo { get; init; } = string.Empty;
+        public string RamInfo { get; init; } = string.Empty;
     }
 }

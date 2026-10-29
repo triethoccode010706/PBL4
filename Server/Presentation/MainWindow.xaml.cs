@@ -215,7 +215,7 @@ namespace Server.Presentation
             }
             ClientList.Items.Add(new ListBoxItem
             {
-                Content = client.ToString(),
+                Content = FormatClientInfo(client),
                 Tag = client.SessionId
             });
 
@@ -327,7 +327,7 @@ namespace Server.Presentation
 
                 if (sessionId == client.SessionId)
                 {
-                    item.Content = client.ToString();
+                    item.Content = FormatClientInfo(client);
                     break;
                 }
             }
@@ -382,6 +382,17 @@ namespace Server.Presentation
                 _canClose = true;
                 Close();
             }
+        }
+        private static string FormatClientInfo(ConnectedClient client)
+        {
+            ClientSystemInfo info = client.GetSystemInfoSnapshot();
+
+            return $"Tên máy: {info.MachineName} | "
+                + $"Người dùng: {info.UserName} | "
+                + $"IP: {info.IpAddress} | "
+                + $"Hệ điều hành: {info.OsDescription} | "
+                + $"CPU: {info.CpuInfo} | "
+                + $"RAM: {info.RamInfo}";
         }
         private void ShowScreenshot( string sessionId, string base64)
         {

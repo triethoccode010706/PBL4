@@ -1,10 +1,7 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-using System.Collections.Concurrent;
 using Server.Domain;
 
 namespace Server.Application
@@ -13,6 +10,8 @@ namespace Server.Application
     {
         private readonly ConcurrentDictionary<string, ConnectedClient>
             _clients = new();
+
+        public event Action<ConnectedClient>? ClientUpdated;
 
         public bool AddClient(ConnectedClient client)
         {
@@ -27,7 +26,6 @@ namespace Server.Application
         public ConnectedClient? GetClient(string sessionId)
         {
             _clients.TryGetValue(sessionId, out var client);
-
             return client;
         }
 
@@ -35,7 +33,10 @@ namespace Server.Application
         {
             return _clients.Values.ToList();
         }
-        public bool UpdateMachineName( string sessionId,string machineName)
+
+        public bool UpdateMachineName(
+            string sessionId,
+            string machineName)
         {
             if (string.IsNullOrWhiteSpace(machineName))
             {
@@ -50,10 +51,43 @@ namespace Server.Application
             }
 
             client.UpdateMachineName(machineName);
+            ClientUpdated?.Invoke(client);
 
             return true;
         }
-        public bool UpdateHeartbeat(string sessionId,DateTime heartbeatAt)
+
+        public bool UpdateSystemInfo(
+            string sessionId,
+            string machineName,
+            string userName,
+            string ipAddress,
+            string osDescription,
+            string cpuInfo,
+            string ramInfo)
+        {
+            ConnectedClient? client = GetClient(sessionId);
+
+            if (client == null)
+            {
+                return false;
+            }
+
+            client.UpdateSystemInfo(
+                machineName,
+                userName,
+                ipAddress,
+                osDescription,
+                cpuInfo,
+                ramInfo);
+
+            ClientUpdated?.Invoke(client);
+
+            return true;
+        }
+
+        public bool UpdateHeartbeat(
+            string sessionId,
+            DateTime heartbeatAt)
         {
             ConnectedClient? client = GetClient(sessionId);
 
@@ -73,7 +107,10 @@ namespace Server.Application
 
             return true;
         }
-        public IReadOnlyList<ConnectedClient> GetTimedOutClients( TimeSpan timeout,DateTime now)
+
+        public IReadOnlyList<ConnectedClient> GetTimedOutClients(
+            TimeSpan timeout,
+            DateTime now)
         {
             var timedOutClients = new List<ConnectedClient>();
 
@@ -89,6 +126,5 @@ namespace Server.Application
 
             return timedOutClients;
         }
-        public event Action<ConnectedClient>? ClientUpdated;
     }
 }

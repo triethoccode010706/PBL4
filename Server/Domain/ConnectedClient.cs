@@ -1,3 +1,4 @@
+
 namespace Server.Domain
 {
     public sealed class ConnectedClient
@@ -7,18 +8,25 @@ namespace Server.Domain
         public DateTime ConnectedAt { get; }
 
         public string MachineName { get; private set; }
-        public ClientStatus Status { get; private set; }
+        public string UserName { get; private set; } = string.Empty;
+        public string IpAddress { get; private set; } = string.Empty;
+        public string OsDescription { get; private set; } = string.Empty;
+        public string CpuInfo { get; private set; } = string.Empty;
+        public string RamInfo { get; private set; } = string.Empty;
 
+        public ClientStatus Status { get; private set; }
         public DateTime? LastHeartbeatAt { get; private set; }
+
         private readonly object _stateLock = new();
+
         public ConnectedClient(
             string sessionId,
             string remoteEndPoint)
         {
             SessionId = sessionId;
             RemoteEndPoint = remoteEndPoint;
-
             ConnectedAt = DateTime.UtcNow;
+
             MachineName = "Chưa có tên";
             Status = ClientStatus.Connected;
             LastHeartbeatAt = null;
@@ -31,55 +39,75 @@ namespace Server.Domain
                 return;
             }
 
-            MachineName = machineName;
+            lock (_stateLock)
+            {
+                MachineName = machineName;
+            }
         }
+        public void UpdateSystemInfo(
+            string machineName,
+            string userName,
+            string ipAddress,
+            string osDescription,
+            string cpuInfo,
+            string ramInfo)
+        {
+            lock (_stateLock)
+            {
+                if (!string.IsNullOrWhiteSpace(machineName))
+                    MachineName = machineName;
+
+                UserName = userName ?? string.Empty;
+                IpAddress = ipAddress ?? string.Empty;
+                OsDescription = osDescription ?? string.Empty;
+                CpuInfo = cpuInfo ?? string.Empty;
+                RamInfo = ramInfo ?? string.Empty;
+            }
+        }
+
         public bool UpdateHeartbeat(DateTime heartbeatAt)
         {
             lock (_stateLock)
             {
                 if (Status != ClientStatus.Connected)
-                {
                     return false;
-                }
 
                 LastHeartbeatAt = heartbeatAt;
-
                 return true;
             }
         }
-        public bool TryMarkTimedOut( DateTime now,TimeSpan timeout)
+
+        public bool TryMarkTimedOut(DateTime now, TimeSpan timeout)
         {
             lock (_stateLock)
             {
                 if (Status != ClientStatus.Connected)
-                {
                     return false;
-                }
 
                 DateTime lastSeen = LastHeartbeatAt ?? ConnectedAt;
 
                 if (now - lastSeen < timeout)
-                {
                     return false;
-                }
 
                 Status = ClientStatus.TimedOut;
                 return true;
             }
         }
-        public override string ToString()
+
+        public ClientSystemInfo GetSystemInfoSnapshot()
         {
-            string heartbeatText = "Chưa có";
-
-            if (LastHeartbeatAt.HasValue)
+            lock (_stateLock)
             {
-                heartbeatText = LastHeartbeatAt.Value
-                    .ToLocalTime()
-                    .ToString("HH:mm:ss");
+                return new ClientSystemInfo
+                {
+                    MachineName = MachineName,
+                    UserName = UserName,
+                    IpAddress = IpAddress,
+                    OsDescription = OsDescription,
+                    CpuInfo = CpuInfo,
+                    RamInfo = RamInfo
+                };
             }
-
-            return $"{MachineName} | {RemoteEndPoint} "
-                + $"| {Status} | Heartbeat: {heartbeatText}";
         }
     }
 }
