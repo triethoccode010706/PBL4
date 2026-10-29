@@ -9,16 +9,18 @@ namespace Client.Application
         private readonly IMachineInfoProvider _machineInfoProvider;
         private readonly IScreenCapture _screenCapture;
         private readonly IScreenStreamingService _streaming;
+        private readonly IMouseController _mouseController;
         public event Action<string>? Log;
 
-        public ClientAgent(ITcpClient tcpClient,IMachineInfoProvider machineInfoProvider,IScreenCapture screenCapture,IScreenStreamingService streaming)
+        public ClientAgent(ITcpClient tcpClient,IMachineInfoProvider machineInfoProvider,IScreenCapture screenCapture,
+            IScreenStreamingService streaming,IMouseController mouseController)
         {
             _tcpClient = tcpClient;
             _machineInfoProvider = machineInfoProvider;
             _screenCapture = screenCapture;
             _streaming = streaming;
+            _mouseController = mouseController;
         }
-
         public async Task RunAsync(
             string serverIp,
             int port,
@@ -32,7 +34,8 @@ namespace Client.Application
                     "Chưa cấu hình biến môi trường PBL4_AUTH_KEY.");
             }
 
-            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture, _streaming, cancellationToken);
+            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture,
+                _streaming, _mouseController,cancellationToken);
             bool connected = await _tcpClient.ConnectAsync(serverIp, port, cancellationToken);
             if (!connected)
             {

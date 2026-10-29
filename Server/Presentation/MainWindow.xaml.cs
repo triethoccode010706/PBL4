@@ -7,6 +7,8 @@ using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Threading;
 namespace Server.Presentation
 {
     public partial class MainWindow : Window
@@ -18,9 +20,12 @@ namespace Server.Presentation
         private bool _isClosed;
         private readonly HashSet<string> _removedSessions = new();
         private bool _serverRunning;
+        private readonly HashSet<string> _mouseMoveRequests = new();
+        private readonly Dictionary<string, MouseMoveDto> _pendingMouseMoves = new();
         private readonly Dictionary<string, ScreenPreviewWindow> _screenWindows = new();
 
         private readonly ConcurrentDictionary<string, byte>  _pendingFrameUpdates = new();
+        private readonly Dictionary<string, SemaphoreSlim> _inputLocks = new();
         public MainWindow(IManagementService management)
         {
             _management = management;
@@ -33,7 +38,17 @@ namespace Server.Presentation
             _management.Start();
             Closing += OnClosing;
         }
-            private void OpenScreenPreview(string sessionId)
+        private SemaphoreSlim GetInputLock(string sessionId)
+        {
+            if (!_inputLocks.TryGetValue(sessionId, out var inputLock))
+            {
+                inputLock = new SemaphoreSlim(1, 1);
+                _inputLocks.Add(sessionId, inputLock);
+            }
+
+            return inputLock;
+        }
+        private void OpenScreenPreview(string sessionId)
         {
             if (_screenWindows.TryGetValue(
                 sessionId,
@@ -45,6 +60,18 @@ namespace Server.Presentation
 
             var window = new ScreenPreviewWindow(
                 ShortId(sessionId));
+            window.MouseClickSelected += async (xRatio, yRatio, button) =>
+            {
+                await SendMouseClickAsync(
+                    sessionId,
+                    xRatio,
+                    yRatio,
+                    button);
+            };
+            window.MousePositionSelected += async (xRatio, yRatio) =>
+            {
+                await SendMouseMoveAsync(sessionId, xRatio, yRatio);
+            };
 
             window.Owner = this;
 
@@ -428,6 +455,166 @@ namespace Server.Presentation
             };
 
             preview.Show();
+        }
+        private async Task SendMouseMoveAsync(string sessionId,double xRatio,  double yRatio)
+        {
+            if (!CanSendInput(sessionId))
+            {
+                return;
+            }
+
+            _pendingMouseMoves[sessionId] = new MouseMoveDto
+            {
+                XRatio = xRatio,
+                YRatio = yRatio
+            };
+
+            if (!_mouseMoveRequests.Add(sessionId))
+            {
+                return;
+            }
+
+            SemaphoreSlim inputLock = GetInputLock(sessionId);
+
+            try
+            {
+                while (CanSendInput(sessionId))
+                {
+                    await inputLock.WaitAsync();
+
+                    try
+                    {
+                        if (!CanSendInput(sessionId))
+                        {
+                            break;
+                        }
+
+                        // Chỉ lấy vị trí sau khi đã có khóa.
+                        if (!_pendingMouseMoves.Remove(
+                            sessionId,
+                            out MouseMoveDto? position))
+                        {
+                            break;
+                        }
+
+                        string json = JsonSerializer.Serialize(position);
+
+                        Response response =
+                            await _management.SendCommandAsync(
+                                sessionId,
+                                CommandType.MOUSE_MOVE,
+                                json);
+
+                        if (!response.Success)
+                        {
+                            if (!_isClosing && !_isClosed)
+                            {
+                                AppendLog(
+                                    "Không di chuyển được chuột: "
+                                    + response.Message);
+                            }
+
+                            break;
+                        }
+                    }
+                    finally
+                    {
+                        inputLock.Release();
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Phiên hoặc yêu cầu đã kết thúc.
+            }
+            catch (Exception ex)
+            {
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Không gửi được lệnh di chuyển chuột: "
+                        + ex.Message);
+                }
+            }
+            finally
+            {
+                _pendingMouseMoves.Remove(sessionId);
+                _mouseMoveRequests.Remove(sessionId);
+            }
+        }
+        private bool CanSendInput(string sessionId)
+        {
+            return !_isClosing
+                && !_isClosed
+                && _serverRunning
+                && !_removedSessions.Contains(sessionId);
+        }
+        private async Task SendMouseClickAsync( string sessionId,double xRatio,double yRatio, MouseButtonType button)
+        {
+            if (!CanSendInput(sessionId))
+            {
+                return;
+            }
+
+            // Bỏ vị trí di chuyển cũ chưa gửi.
+            _pendingMouseMoves.Remove(sessionId);
+
+            SemaphoreSlim inputLock = GetInputLock(sessionId);
+
+            try
+            {
+                await inputLock.WaitAsync();
+
+                try
+                {
+                    if (!CanSendInput(sessionId))
+                    {
+                        return;
+                    }
+
+                    // Bỏ các vị trí tích lũy trong lúc chờ khóa.
+                    _pendingMouseMoves.Remove(sessionId);
+
+                    var click = new MouseClickDto
+                    {
+                        XRatio = xRatio,
+                        YRatio = yRatio,
+                        Button = button
+                    };
+
+                    string json = JsonSerializer.Serialize(click);
+
+                    Response response =
+                        await _management.SendCommandAsync(
+                            sessionId,
+                            CommandType.MOUSE_CLICK,
+                            json);
+
+                    if (!response.Success && !_isClosing && !_isClosed)
+                    {
+                        AppendLog(
+                            "Không click được chuột: "
+                            + response.Message);
+                    }
+                }
+                finally
+                {
+                    inputLock.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Phiên hoặc yêu cầu đã kết thúc.
+            }
+            catch (Exception ex)
+            {
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Không gửi được lệnh click chuột: "
+                        + ex.Message);
+                }
+            }
         }
     }
 }

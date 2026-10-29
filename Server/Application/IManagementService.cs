@@ -22,5 +22,10 @@ namespace Server.Application
             string sessionId,
             CommandType commandType,
             CancellationToken cancellationToken = default);
+        Task<Response> SendCommandAsync( 
+            string sessionId,
+            CommandType commandType,
+            string data,
+            CancellationToken cancellationToken = default);
     }
 }

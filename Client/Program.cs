@@ -62,12 +62,8 @@ class Program
             new ScreenStreamingService(
                 screenCapture,
                 frameSender);
-
-        IClientAgent agent = new ClientAgent(
-            tcpClient,
-            new MachineInfoProvider(),
-            screenCapture,
-            streaming);
+        IMouseController mouseController = new MouseController();
+        IClientAgent agent = new ClientAgent( tcpClient,new MachineInfoProvider(),screenCapture, streaming,mouseController);
 
         agent.Log += Console.WriteLine;
 

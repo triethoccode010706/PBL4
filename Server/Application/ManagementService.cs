@@ -344,12 +344,17 @@ namespace Server.Application
             // Không gọi ClientUpdated?.Invoke(client) lần nữa ở đây.
         }
 
-        public async Task<Response> SendCommandAsync(
-            string sessionId,
-            CommandType commandType,
-            CancellationToken cancellationToken = default)
+        public Task<Response> SendCommandAsync( string sessionId, CommandType commandType,CancellationToken cancellationToken = default)
         {
-            Command command = Command.Create(commandType);
+            return SendCommandAsync(
+                sessionId,
+                commandType,
+                string.Empty,
+                cancellationToken);
+        }
+        public async Task<Response> SendCommandAsync( string sessionId, CommandType commandType, string data, CancellationToken cancellationToken = default)
+        {
+            Command command = Command.Create(commandType, data);
 
             Response response = await _server.SendCommandAsync(
                 sessionId,

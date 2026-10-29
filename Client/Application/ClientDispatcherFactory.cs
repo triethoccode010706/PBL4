@@ -11,6 +11,7 @@ namespace Client.Application
     string secretKey,
     IScreenCapture screenCapture,
     IScreenStreamingService streaming,
+    IMouseController mouseController,
     CancellationToken sessionToken)
         {
             var dispatcher = new CommandDispatcher();
@@ -34,10 +35,12 @@ namespace Client.Application
 
             dispatcher.Register(
                 new StopScreenCommandHandler(streaming));
+            dispatcher.Register(
+                new MouseMoveCommandHandler(mouseController));
 
-            dispatcher.RegisterNotImplemented(
-                CommandType.MOUSE_MOVE,
-                CommandType.MOUSE_CLICK,
+            dispatcher.Register(
+                new MouseClickCommandHandler(mouseController));
+            dispatcher.RegisterNotImplemented(       
                 CommandType.KEY_DOWN,
                 CommandType.KEY_UP);
 
