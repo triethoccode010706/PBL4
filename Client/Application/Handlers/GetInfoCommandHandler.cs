@@ -3,6 +3,7 @@ using Client.Domain;
 using Shared.Models;
 using Shared.Protocol;
 
+
 namespace Client.Application.Handlers
 {
     public sealed class GetInfoCommandHandler : ICommandHandler
@@ -25,7 +26,10 @@ namespace Client.Application.Handlers
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                MachineInfo info = _machineInfoProvider.GetMachineInfo();
+                MachineInfo info =
+                    _machineInfoProvider.GetMachineInfo();
+
+                cancellationToken.ThrowIfCancellationRequested();
 
                 var dto = new MachineInfoDto
                 {
@@ -38,15 +42,12 @@ namespace Client.Application.Handlers
                 };
 
                 string json = JsonSerializer.Serialize(dto);
-                Console.WriteLine("[GET_INFO] JSON gửi về Server:");
-                Console.WriteLine(json);
 
-                Response response = Response.Ok(
-                    command.RequestId,
-                    "Thu thập thông tin hệ thống thành công",
-                    json);
-
-                return Task.FromResult(response);
+                return Task.FromResult(
+                    Response.Ok(
+                        command.RequestId,
+                        "Thu thập thông tin hệ thống thành công",
+                        json));
             }
             catch (OperationCanceledException)
             {
@@ -54,12 +55,11 @@ namespace Client.Application.Handlers
             }
             catch (Exception ex)
             {
-                Response response = Response.Fail(
-                    command.RequestId,
-                    "SYSTEM_INFO_ERROR",
-                    $"Không thể thu thập thông tin hệ thống: {ex.Message}");
-
-                return Task.FromResult(response);
+                return Task.FromResult(
+                    Response.Fail(
+                        command.RequestId,
+                        "SYSTEM_INFO_ERROR",
+                        $"Không thể thu thập thông tin hệ thống: {ex.Message}"));
             }
         }
     }

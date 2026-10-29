@@ -39,9 +39,11 @@ namespace Server.Domain
                 return;
             }
 
-            MachineName = machineName;
+            lock (_stateLock)
+            {
+                MachineName = machineName;
+            }
         }
-
         public void UpdateSystemInfo(
             string machineName,
             string userName,
@@ -92,14 +94,20 @@ namespace Server.Domain
             }
         }
 
-        public override string ToString()
+        public ClientSystemInfo GetSystemInfoSnapshot()
         {
-            return $"Tên máy: {MachineName} | "
-                + $"Người dùng: {UserName} | "
-                + $"IP: {IpAddress} | "
-                + $"Hệ điều hành: {OsDescription} | "
-                + $"CPU: {CpuInfo} | "
-                + $"RAM: {RamInfo}";
+            lock (_stateLock)
+            {
+                return new ClientSystemInfo
+                {
+                    MachineName = MachineName,
+                    UserName = UserName,
+                    IpAddress = IpAddress,
+                    OsDescription = OsDescription,
+                    CpuInfo = CpuInfo,
+                    RamInfo = RamInfo
+                };
+            }
         }
     }
 }
