@@ -8,16 +8,5 @@ namespace Client.Domain
         public string OsDescription { get; init; } = string.Empty;
         public string CpuInfo { get; init; } = string.Empty;
         public string RamInfo { get; init; } = string.Empty;
-
-        public override string ToString()
-        {
-            return
-                $"MachineName: {MachineName}\n" +
-                $"UserName: {UserName}\n" +
-                $"IP: {IpAddress}\n" +
-                $"Windows: {OsDescription}\n" +
-                $"CPU: {CpuInfo}\n" +
-                $"RAM: {RamInfo}";
-        }
     }
 }
