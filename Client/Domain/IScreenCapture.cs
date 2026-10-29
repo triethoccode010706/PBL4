@@ -1,0 +1,13 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Client.Domain
+{
+    public interface IScreenCapture
+    {
+        byte[] CaptureJpeg(int quality = 40);
+    }
+}

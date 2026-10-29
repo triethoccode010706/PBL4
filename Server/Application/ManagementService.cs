@@ -1,0 +1,509 @@
+using Server.Domain;
+using Server.Infrastructure;
+using Shared.Models;
+using Shared.Security;
+using System.Text.Json;
+
+namespace Server.Application
+{
+    public sealed class ManagementService : IManagementService
+    {
+        private readonly IServer _server;
+        private readonly IConnectionManager _connectionManager;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly IHeartbeatService _heartbeatService;
+        private readonly IClientManager _clientManager;
+        private readonly IAuthenticationService _authenticationService;
+
+        private readonly object _initialInfoLock = new();
+        private readonly List<Task> _initialInfoTasks = new();
+
+        private int _stopped;
+        private bool _isStopping;
+        private Task? _runTask;
+
+        public event Action<ConnectedClient>? ClientConnected;
+        public event Action<ConnectedClient>? ClientUpdated;
+        public event Action<string>? ClientDisconnected;
+        public event Action<string, Command>? CommandSent;
+        public event Action<string, Response>? ResponseReceived;
+        public event Action<string>? ErrorOccurred;
+        public event Action? ServerStarted;
+        public event Action<string>? ServerStartFailed;
+        public event Action<string, ScreenFrame>? ScreenFrameReceived;
+
+        public ManagementService(
+            IServer server,
+            IConnectionManager connectionManager,
+            IClientManager clientManager,
+            IHeartbeatService heartbeatService,
+            IAuthenticationService authenticationService)
+        {
+            _server = server;
+            _connectionManager = connectionManager;
+            _clientManager = clientManager;
+            _heartbeatService = heartbeatService;
+            _authenticationService = authenticationService;
+
+            _connectionManager.SessionAdded += session =>
+            {
+                var client = new ConnectedClient(
+                    session.SessionId,
+                    session.RemoteEndPoint);
+
+                bool added = _clientManager.AddClient(client);
+
+                if (!added)
+                {
+                    return;
+                }
+
+                ClientConnected?.Invoke(client);
+
+                lock (_initialInfoLock)
+                {
+                    if (_isStopping)
+                    {
+                        return;
+                    }
+
+                    _initialInfoTasks.RemoveAll(
+                        task => task.IsCompleted);
+
+                    Task task = Task.Run(
+                        () => LoadInitialInfoAsync(session.SessionId));
+
+                    _initialInfoTasks.Add(task);
+                }
+            };
+
+            _connectionManager.SessionRemoved += sessionId =>
+            {
+                bool removed = _clientManager.RemoveClient(sessionId);
+
+                if (removed)
+                {
+                    ClientDisconnected?.Invoke(sessionId);
+                }
+            };
+
+            _server.CommandSent += (sessionId, command) =>
+            {
+                CommandSent?.Invoke(sessionId, command);
+            };
+
+            _server.ResponseReceived += (sessionId, response) =>
+            {
+                ResponseReceived?.Invoke(sessionId, response);
+            };
+
+            _clientManager.ClientUpdated += client =>
+            {
+                ClientUpdated?.Invoke(client);
+            };
+
+            _server.ScreenFrameReceived += OnScreenFrameReceived;
+        }
+
+        public void Start()
+        {
+            if (_runTask != null)
+            {
+                return;
+            }
+
+            _runTask = Task.Run(RunAsync);
+        }
+
+        public void Stop()
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) == 1)
+            {
+                return;
+            }
+
+            lock (_initialInfoLock)
+            {
+                _isStopping = true;
+            }
+
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // CancellationTokenSource đã được giải phóng.
+            }
+
+            _server.Stop();
+        }
+
+        public async Task StopAsync()
+        {
+            Stop();
+
+            if (_runTask != null)
+            {
+                await _runTask;
+            }
+        }
+
+        private async Task RunAsync()
+        {
+            Task? serverTask = null;
+            Task? heartbeatTask = null;
+            Task? timeoutTask = null;
+
+            bool serverStarted = false;
+
+            try
+            {
+                serverTask = _server.StartAsync(_cts.Token);
+
+                if (serverTask.IsCompleted)
+                {
+                    await serverTask;
+                    return;
+                }
+
+                serverStarted = true;
+                ServerStarted?.Invoke();
+
+                heartbeatTask =
+                    _heartbeatService.RunAsync(_cts.Token);
+
+                timeoutTask =
+                    CheckTimeoutsAsync(_cts.Token);
+
+                Task completedTask = await Task.WhenAny(
+                    serverTask,
+                    heartbeatTask,
+                    timeoutTask);
+
+                await completedTask;
+            }
+            catch (OperationCanceledException)
+                when (_cts.IsCancellationRequested)
+            {
+                // Server dừng theo yêu cầu.
+            }
+            catch (Exception ex)
+            {
+                if (!serverStarted)
+                {
+                    ServerStartFailed?.Invoke(ex.Message);
+                }
+                else
+                {
+                    ErrorOccurred?.Invoke(ex.Message);
+                }
+            }
+            finally
+            {
+                lock (_initialInfoLock)
+                {
+                    _isStopping = true;
+                }
+
+                try
+                {
+                    _cts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Token source đã được giải phóng.
+                }
+
+                _server.Stop();
+
+                try
+                {
+                    if (serverTask != null)
+                    {
+                        await serverTask;
+                    }
+                }
+                catch (Exception)
+                {
+                    // Tiếp tục dọn dẹp các tác vụ khác.
+                }
+
+                try
+                {
+                    await _server.WaitForSessionsAsync();
+                }
+                catch (Exception ex)
+                {
+                    ErrorOccurred?.Invoke(
+                        "Lỗi khi chờ các session kết thúc: " + ex.Message);
+                }
+
+                try
+                {
+                    if (heartbeatTask != null)
+                    {
+                        await heartbeatTask;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Heartbeat đã dừng.
+                }
+                catch (Exception)
+                {
+                    // Tiếp tục dọn dẹp.
+                }
+
+                try
+                {
+                    if (timeoutTask != null)
+                    {
+                        await timeoutTask;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Kiểm tra timeout đã dừng.
+                }
+                catch (Exception)
+                {
+                    // Tiếp tục dọn dẹp.
+                }
+
+                Task[] initialInfoTasks;
+
+                lock (_initialInfoLock)
+                {
+                    initialInfoTasks = _initialInfoTasks.ToArray();
+                }
+
+                try
+                {
+                    await Task.WhenAll(initialInfoTasks);
+                }
+                catch (Exception)
+                {
+                    // Các tác vụ khởi tạo đã được quan sát.
+                }
+
+                _cts.Dispose();
+            }
+        }
+
+        private void UpdateClientInfo(
+            string sessionId,
+            string json)
+        {
+            MachineInfoDto? info;
+
+            try
+            {
+                info = JsonSerializer.Deserialize<MachineInfoDto>(
+                    json,
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
+            }
+            catch (JsonException ex)
+            {
+                ErrorOccurred?.Invoke(
+                    $"GET_INFO trả về dữ liệu JSON không hợp lệ: {ex.Message}");
+
+                return;
+            }
+
+            if (info == null ||
+                string.IsNullOrWhiteSpace(info.MachineName))
+            {
+                ErrorOccurred?.Invoke(
+                    "GET_INFO thiếu tên máy hoặc dữ liệu không hợp lệ.");
+
+                return;
+            }
+
+            bool updated = _clientManager.UpdateSystemInfo(
+                sessionId,
+                info.MachineName,
+                info.UserName ?? string.Empty,
+                info.IpAddress ?? string.Empty,
+                info.OsDescription ?? string.Empty,
+                info.CpuInfo ?? string.Empty,
+                info.RamInfo ?? string.Empty);
+
+            if (!updated)
+            {
+                ErrorOccurred?.Invoke(
+                    $"Không thể cập nhật thông tin Client có session {sessionId}.");
+
+                return;
+            }
+
+            // ClientUpdated được phát qua _clientManager.ClientUpdated.
+            // Không gọi ClientUpdated?.Invoke(client) lần nữa ở đây.
+        }
+
+        public async Task<Response> SendCommandAsync(
+            string sessionId,
+            CommandType commandType,
+            CancellationToken cancellationToken = default)
+        {
+            Command command = Command.Create(commandType);
+
+            Response response = await _server.SendCommandAsync(
+                sessionId,
+                command,
+                cancellationToken);
+
+            if (commandType == CommandType.GET_INFO &&
+                response.Success)
+            {
+                UpdateClientInfo(sessionId, response.Data);
+            }
+
+            if (commandType == CommandType.PING &&
+                response.Success)
+            {
+                _clientManager.UpdateHeartbeat(
+                    sessionId,
+                    DateTime.UtcNow);
+            }
+
+            return response;
+        }
+
+        private async Task CheckTimeoutsAsync(
+            CancellationToken cancellationToken)
+        {
+            using var timer =
+                new PeriodicTimer(TimeSpan.FromSeconds(1));
+
+            TimeSpan timeout = TimeSpan.FromSeconds(15);
+
+            try
+            {
+                while (await timer.WaitForNextTickAsync(
+                    cancellationToken))
+                {
+                    var clients = _clientManager.GetTimedOutClients(
+                        timeout,
+                        DateTime.UtcNow);
+
+                    foreach (ConnectedClient client in clients)
+                    {
+                        try
+                        {
+                            ErrorOccurred?.Invoke(
+                                $"Client {client.SessionId} mất phản hồi "
+                                + "heartbeat quá 15 giây.");
+                        }
+                        finally
+                        {
+                            _connectionManager.RemoveSession(
+                                client.SessionId);
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                // Dừng kiểm tra khi Server dừng.
+            }
+        }
+
+        private async Task LoadInitialInfoAsync(string sessionId)
+        {
+            IClientSession? session =
+                _connectionManager.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return;
+            }
+
+            try
+            {
+                bool authenticated =
+                    await _authenticationService.AuthenticateAsync(
+                        session,
+                        _cts.Token);
+
+                if (!authenticated)
+                {
+                    _connectionManager.RemoveSession(sessionId);
+
+                    ErrorOccurred?.Invoke(
+                        $"Client {sessionId} xác thực thất bại.");
+
+                    return;
+                }
+
+                _cts.Token.ThrowIfCancellationRequested();
+
+                session.MarkAuthenticated();
+            }
+            catch (OperationCanceledException)
+            {
+                _connectionManager.RemoveSession(sessionId);
+
+                if (!_cts.IsCancellationRequested)
+                {
+                    ErrorOccurred?.Invoke(
+                        $"Client {sessionId} xác thực quá hạn.");
+                }
+
+                return;
+            }
+            catch (Exception ex)
+            {
+                _connectionManager.RemoveSession(sessionId);
+
+                ErrorOccurred?.Invoke(
+                    $"Không xác thực được Client {sessionId}: {ex.Message}");
+
+                return;
+            }
+
+            try
+            {
+                await SendCommandAsync(
+                    sessionId,
+                    CommandType.GET_INFO,
+                    _cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Server dừng hoặc phiên kết thúc.
+            }
+            catch (Exception ex)
+            {
+                ErrorOccurred?.Invoke(
+                    $"Không lấy được thông tin Client {sessionId}: "
+                    + ex.Message);
+            }
+        }
+
+        private void OnScreenFrameReceived(
+            string sessionId,
+            ScreenFrame frame)
+        {
+            IClientSession? session =
+                _connectionManager.GetSession(sessionId);
+
+            if (session == null || !session.IsConnected)
+            {
+                return;
+            }
+
+            if (session.AuthStatus !=
+                AuthenticationStatus.Authenticated)
+            {
+                return;
+            }
+
+            ScreenFrameReceived?.Invoke(sessionId, frame);
+        }
+    }
+}

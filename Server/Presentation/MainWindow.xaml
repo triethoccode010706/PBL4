@@ -1,0 +1,63 @@
+<Window x:Class="Server.Presentation.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PBL4 Server — Máy quản lý"
+        Height="560"
+        Width="860">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="StatusText"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Text="Đang khởi động server..." />
+
+        <DockPanel Grid.Row="1" Margin="0,12,0,8">
+            <TextBlock DockPanel.Dock="Top"
+                       FontWeight="SemiBold"
+                       Text="Client đang kết nối — chọn máy để gửi lệnh" />
+            <ListBox x:Name="ClientList" Margin="0,6,0,0" />
+        </DockPanel>
+
+        <DockPanel Grid.Row="2" Margin="0,0,0,8">
+            <TextBlock DockPanel.Dock="Top"
+                       FontWeight="SemiBold"
+                       Text="Gửi lệnh tới Client đã chọn" />
+            <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                <ComboBox x:Name="CommandCombo"
+                          Width="180"
+                          SelectedIndex="0">
+                    <ComboBoxItem Content="PING" Tag="PING" />
+                    <ComboBoxItem Content="GET_INFO" Tag="GET_INFO" />
+                    <ComboBoxItem Content="START_SCREEN" Tag="START_SCREEN" />
+                    <ComboBoxItem Content="STOP_SCREEN" Tag="STOP_SCREEN" />
+                    <ComboBoxItem Content="DISCONNECT" Tag="DISCONNECT" />
+                    <ComboBoxItem Content="CAPTURE_SCREEN" Tag="CAPTURE_SCREEN"/>
+                </ComboBox>
+                <Button x:Name="SendCommandButton"
+                        Margin="8,0,0,0"
+                        Padding="16,4"
+                        Click="OnSendCommandClick"
+                        Content="Gửi lệnh" />
+            </StackPanel>
+        </DockPanel>
+
+        <DockPanel Grid.Row="3">
+            <TextBlock DockPanel.Dock="Top"
+                       FontWeight="SemiBold"
+                       Text="Nhật ký command / response" />
+            <TextBox x:Name="LogBox"
+                     Margin="0,6,0,0"
+                     IsReadOnly="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     FontFamily="Consolas" />
+        </DockPanel>
+    </Grid>
+</Window>
