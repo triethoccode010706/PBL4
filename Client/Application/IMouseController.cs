@@ -16,5 +16,21 @@ namespace Client.Application
             double xRatio,
             double yRatio,
             MouseButtonType button);
+        void ButtonDown(
+            double xRatio,
+            double yRatio,
+            MouseButtonType button);
+
+        void ButtonUp(
+            double xRatio,
+            double yRatio,
+            MouseButtonType button);
+
+        void Scroll(
+            double xRatio,
+            double yRatio,
+            int delta);
+
+        void ReleaseAll();
     }
 }

@@ -20,9 +20,24 @@ namespace Server.Presentation
         private readonly DispatcherTimer _mouseTimer;
 
         private (double X, double Y)? _pendingMousePosition;
+        private readonly HashSet<MouseButtonType>  _pressedMouseButtons = new();
+
+        private (double X, double Y) _lastMousePosition;
+
+        public event Action<double, double, MouseButtonType, bool>?
+            MouseButtonInputSelected;
+
+        public event Action<double, double, int>?
+            MouseWheelSelected;
 
         public event Action<double, double>? MousePositionSelected;
         public event Action<double, double, MouseButtonType>? MouseClickSelected;
+        private readonly CheckBox _keyboardControl;
+
+        private readonly HashSet<(int Code, bool Extended)>
+            _pressedKeys = new();
+
+        public event Action<int, bool, bool>? KeyInputSelected;
 
         public ScreenPreviewWindow(string sessionId)
         {
@@ -35,14 +50,28 @@ namespace Server.Presentation
                 Stretch = Stretch.Uniform
             };
 
-            // Tạm tắt di chuyển liên tục khi thử trên một máy.
-            // _image.MouseMove += OnImageMouseMove;
 
-            // Bật xử lý nhấn chuột trái và phải.
-            _image.MouseDown += OnImageMouseDown;
+            _image.MouseMove += OnImageMouseMove;
+
+            _image.MouseDown += OnImageButtonDown;
+            _image.MouseUp += OnImageButtonUp;
+            _image.MouseWheel += OnImageMouseWheel;
+
+            _image.LostMouseCapture += (_, _) =>
+            {
+                ReleaseMouseButtons();
+            };
+
             _image.MouseLeave += (_, _) =>
             {
-                _pendingMousePosition = null;
+                if (!_image.IsMouseCaptured)
+                {
+                    _pendingMousePosition = null;
+                }
+            };
+            Deactivated += (_, _) =>
+            {
+                ReleaseMouseButtons();
             };
 
             _mouseTimer = new DispatcherTimer
@@ -66,10 +95,47 @@ namespace Server.Presentation
 
             _mouseTimer.Start();
 
-            Content = _image;
+            _image.Focusable = true;
+
+            _keyboardControl = new CheckBox
+            {
+                Content = "Điều khiển bàn phím",
+                Margin = new Thickness(8),
+                Focusable = false
+            };
+
+            _keyboardControl.Checked += (_, _) =>
+            {
+                Keyboard.Focus(_image);
+            };
+
+            _keyboardControl.Unchecked += (_, _) =>
+            {
+                ReleasePressedKeys();
+            };
+
+            var layout = new DockPanel();
+
+            DockPanel.SetDock(_keyboardControl, Dock.Top);
+
+            layout.Children.Add(_keyboardControl);
+            layout.Children.Add(_image);
+
+            Content = layout;
+
+            PreviewKeyDown += OnPreviewKeyDown;
+            PreviewKeyUp += OnPreviewKeyUp;
+
+            Deactivated += (_, _) =>
+            {
+                _keyboardControl.IsChecked = false;
+            };
 
             Closed += (_, _) =>
             {
+                _keyboardControl.IsChecked = false;
+                ReleaseMouseButtons();
+
                 _mouseTimer.Stop();
                 _pendingMousePosition = null;
                 _image.Source = null;
@@ -107,10 +173,7 @@ namespace Server.Presentation
 
             _image.Source = bitmap;
         }
-        private bool TryGetImagePosition(
-    Point point,
-    out double xRatio,
-    out double yRatio)
+        private bool TryGetImagePosition(Point point,out double xRatio, out double yRatio, bool clampToImage = false)
         {
             xRatio = 0;
             yRatio = 0;
@@ -142,20 +205,37 @@ namespace Server.Presentation
             double imageX = point.X - offsetX;
             double imageY = point.Y - offsetY;
 
-            if (imageX < 0 || imageX > displayedWidth ||
-                imageY < 0 || imageY > displayedHeight)
+            if (!clampToImage && (imageX < 0 || imageX > displayedWidth || imageY < 0 || imageY > displayedHeight))
             {
                 return false;
             }
+
+            imageX = Math.Clamp(imageX, 0, displayedWidth);
+            imageY = Math.Clamp(imageY, 0, displayedHeight);
 
             xRatio = imageX / displayedWidth;
             yRatio = imageY / displayedHeight;
 
             return true;
         }
-        private void OnImageMouseDown(
-    object sender,
-    MouseButtonEventArgs e)
+        private static bool TryGetMouseButton( MouseButton button, out MouseButtonType result)
+        {
+            switch (button)
+            {
+                case MouseButton.Left:
+                    result = MouseButtonType.Left;
+                    return true;
+
+                case MouseButton.Right:
+                    result = MouseButtonType.Right;
+                    return true;
+
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+        private void OnImageMouseDown( object sender,MouseButtonEventArgs e)
         {
             MouseButtonType button;
 
@@ -192,6 +272,222 @@ namespace Server.Presentation
                 xRatio,
                 yRatio,
                 button);
+        }
+        private void OnImageButtonDown(
+    object sender,
+    MouseButtonEventArgs e)
+        {
+            if (!TryGetMouseButton(e.ChangedButton, out var button))
+            {
+                return;
+            }
+
+            if (!TryGetImagePosition(
+                e.GetPosition(_image),
+                out double xRatio,
+                out double yRatio))
+            {
+                return;
+            }
+
+            if (!_image.IsMouseCaptured && !_image.CaptureMouse())
+            {
+                return;
+            }
+
+            if (!_pressedMouseButtons.Add(button))
+            {
+                return;
+            }
+
+            _lastMousePosition = (xRatio, yRatio);
+            _pendingMousePosition = null;
+
+            e.Handled = true;
+
+            MouseButtonInputSelected?.Invoke(
+                xRatio,
+                yRatio,
+                button,
+                true);
+        }
+        private void OnImageButtonUp( object sender,MouseButtonEventArgs e)
+        {
+            if (!TryGetMouseButton(e.ChangedButton, out var button))
+            {
+                return;
+            }
+
+            if (!_pressedMouseButtons.Remove(button))
+            {
+                return;
+            }
+
+            if (TryGetImagePosition(
+                e.GetPosition(_image),
+                out double xRatio,
+                out double yRatio,
+                clampToImage: true))
+            {
+                _lastMousePosition = (xRatio, yRatio);
+            }
+
+            _pendingMousePosition = null;
+            e.Handled = true;
+
+            MouseButtonInputSelected?.Invoke(
+                _lastMousePosition.X,
+                _lastMousePosition.Y,
+                button,
+                false);
+
+            if (_pressedMouseButtons.Count == 0 &&
+                _image.IsMouseCaptured)
+            {
+                _image.ReleaseMouseCapture();
+            }
+        }
+        private void OnImageMouseWheel(object sender,MouseWheelEventArgs e)
+        {
+            if (e.Delta == 0)
+            {
+                return;
+            }
+
+            if (!TryGetImagePosition(
+                e.GetPosition(_image),
+                out double xRatio,
+                out double yRatio))
+            {
+                return;
+            }
+
+            _pendingMousePosition = null;
+            e.Handled = true;
+
+            MouseWheelSelected?.Invoke(
+                xRatio,
+                yRatio,
+                e.Delta);
+        }
+        private void ReleaseMouseButtons()
+        {
+            var buttons = _pressedMouseButtons.ToArray();
+
+            _pressedMouseButtons.Clear();
+            _pendingMousePosition = null;
+
+            if (buttons.Length == 0)
+            {
+                return;
+            }
+
+            if (_image.IsMouseCaptured)
+            {
+                _image.ReleaseMouseCapture();
+            }
+
+            foreach (var button in buttons)
+            {
+                MouseButtonInputSelected?.Invoke(
+                    _lastMousePosition.X,
+                    _lastMousePosition.Y,
+                    button,
+                    false);
+            }
+        }
+        private static bool TryGetKeyInput(KeyEventArgs e,out int virtualKeyCode, out bool isExtended)
+        {
+            Key key = e.Key == Key.System
+                ? e.SystemKey
+                : e.Key;
+
+            virtualKeyCode = KeyInterop.VirtualKeyFromKey(key);
+
+            isExtended = key is
+                Key.RightCtrl or
+                Key.RightAlt or
+                Key.Insert or
+                Key.Delete or
+                Key.Home or
+                Key.End or
+                Key.PageUp or
+                Key.PageDown or
+                Key.Left or
+                Key.Right or
+                Key.Up or
+                Key.Down or
+                Key.Divide or
+                Key.NumLock or
+                Key.PrintScreen or
+                Key.LWin or
+                Key.RWin or
+                Key.Apps;
+
+            return virtualKeyCode >= 1 &&
+                   virtualKeyCode <= 254;
+        }
+        private void OnPreviewKeyDown( object sender, KeyEventArgs e)
+        {
+            if (_keyboardControl.IsChecked != true || !IsActive)
+            {
+                return;
+            }
+
+            if (!TryGetKeyInput(
+                e,
+                out int code,
+                out bool extended))
+            {
+                return;
+            }
+
+            e.Handled = true;
+
+            if (!_pressedKeys.Add((code, extended)))
+            {
+                return;
+            }
+
+            KeyInputSelected?.Invoke(code, extended, true);
+        }
+        private void OnPreviewKeyUp( object sender, KeyEventArgs e)
+        {
+            if (_keyboardControl.IsChecked != true)
+            {
+                return;
+            }
+
+            if (!TryGetKeyInput(
+                e,
+                out int code,
+                out bool extended))
+            {
+                return;
+            }
+
+            e.Handled = true;
+
+            if (!_pressedKeys.Remove((code, extended)))
+            {
+                return;
+            }
+
+            KeyInputSelected?.Invoke(code, extended, false);
+        }
+        private void ReleasePressedKeys()
+        {
+            var keys = _pressedKeys.ToArray();
+
+            _pressedKeys.Clear();
+
+            foreach (var key in keys)
+            {
+                KeyInputSelected?.Invoke(
+                    key.Code,
+                    key.Extended,
+                    false);
+            }
         }
     }
 }

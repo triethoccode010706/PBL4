@@ -12,6 +12,7 @@ namespace Client.Application
     IScreenCapture screenCapture,
     IScreenStreamingService streaming,
     IMouseController mouseController,
+    IKeyboardController keyboardController,
     CancellationToken sessionToken)
         {
             var dispatcher = new CommandDispatcher();
@@ -40,9 +41,14 @@ namespace Client.Application
 
             dispatcher.Register(
                 new MouseClickCommandHandler(mouseController));
-            dispatcher.RegisterNotImplemented(       
-                CommandType.KEY_DOWN,
-                CommandType.KEY_UP);
+            dispatcher.Register(new KeyCommandHandler(CommandType.KEY_DOWN, keyboardController));
+
+            dispatcher.Register( new KeyCommandHandler( CommandType.KEY_UP,keyboardController));
+            dispatcher.Register( new MouseActionCommandHandler( CommandType.MOUSE_DOWN, mouseController));
+
+            dispatcher.Register( new MouseActionCommandHandler( CommandType.MOUSE_UP,mouseController));
+
+            dispatcher.Register( new MouseActionCommandHandler(  CommandType.MOUSE_WHEEL,  mouseController));
 
             return dispatcher;
         }

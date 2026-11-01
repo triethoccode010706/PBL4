@@ -20,6 +20,11 @@ namespace Client.Infrastructure
 
         private const uint RightDown = 0x0008;
         private const uint RightUp = 0x0010;
+        private readonly object _sync = new();
+
+        private readonly HashSet<MouseButtonType> _pressedButtons = new();
+
+        private const uint WheelFlag = 0x0800;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MouseInput
@@ -45,7 +50,7 @@ namespace Client.Infrastructure
             uint inputCount,
             [In] MouseInputPacket[] inputs,
             int inputSize);
-        public void MoveTo(double xRatio, double yRatio)
+        private void MoveToCore(double xRatio, double yRatio)
         {
             if (!double.IsFinite(xRatio) ||
                 xRatio < 0 || xRatio > 1)
@@ -81,68 +86,129 @@ namespace Client.Infrastructure
                     Marshal.GetLastWin32Error());
             }
         }
-        public void Click( double xRatio,double yRatio, MouseButtonType button)
+        public void MoveTo(double xRatio, double yRatio)
         {
-            uint downFlag;
-            uint upFlag;
-
-            switch (button)
+            lock (_sync)
             {
-                case MouseButtonType.Left:
-                    downFlag = LeftDown;
-                    upFlag = LeftUp;
-                    break;
-
-                case MouseButtonType.Right:
-                    downFlag = RightDown;
-                    upFlag = RightUp;
-                    break;
-
-                default:
-                    throw new ArgumentOutOfRangeException(
-                        nameof(button),
-                        "Nút chuột không được hỗ trợ.");
+                MoveToCore(xRatio, yRatio);
             }
-
-            MoveTo(xRatio, yRatio);
-
-            MouseInputPacket[] inputs =
+        }
+        public void Click(double xRatio,double yRatio, MouseButtonType button)
+        {
+            lock (_sync)
             {
-        CreateMouseInput(downFlag),
-        CreateMouseInput(upFlag)
-    };
-
-            uint sent = SendInput(
-                (uint)inputs.Length,
-                inputs,
-                Marshal.SizeOf<MouseInputPacket>());
-
-            if (sent != (uint)inputs.Length)
-            {
-                int errorCode = Marshal.GetLastWin32Error();
-
-                // Nếu chỉ gửi được nhấn, thử gửi thả để tránh giữ nút.
-                if (sent == 1)
+                if (_pressedButtons.Contains(button))
                 {
-                    MouseInputPacket[] release =
-                    {
-                CreateMouseInput(upFlag)
-            };
-
-                    SendInput(
-                        (uint)release.Length,
-                        release,
-                        Marshal.SizeOf<MouseInputPacket>());
+                    throw new InvalidOperationException(
+                        "Nút chuột này đang được giữ.");
                 }
 
-                throw new InvalidOperationException(
-                    $"Không gửi đủ thao tác click. "
-                    + $"Đã gửi {sent}/{inputs.Length}; "
-                    + $"mã lỗi Windows: {errorCode}.");
+                ButtonDown(xRatio, yRatio, button);
+                ButtonUp(xRatio, yRatio, button);
+            }
+        }
+        private static (uint Down, uint Up) GetButtonFlags(MouseButtonType button)
+        {
+            return button switch
+            {
+                MouseButtonType.Left => (LeftDown, LeftUp),
+                MouseButtonType.Right => (RightDown, RightUp),
+
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(button),
+                    "Nút chuột không được hỗ trợ.")
+            };
+        }
+        public void ButtonDown(double xRatio, double yRatio, MouseButtonType button)
+        {
+            var flags = GetButtonFlags(button);
+
+            lock (_sync)
+            {
+                MoveToCore(xRatio, yRatio);
+
+                if (_pressedButtons.Contains(button))
+                {
+                    return;
+                }
+
+                SendMouseEvent(flags.Down);
+
+                _pressedButtons.Add(button);
             }
         }
 
+        public void ButtonUp(double xRatio,  double yRatio,MouseButtonType button)
+        {
+            var flags = GetButtonFlags(button);
 
+            lock (_sync)
+            {
+                if (!_pressedButtons.Contains(button))
+                {
+                    return;
+                }
+
+                try
+                {
+                    MoveToCore(xRatio, yRatio);
+                }
+                finally
+                {
+                    SendMouseEvent(flags.Up);
+
+                    _pressedButtons.Remove(button);
+                }
+            }
+        }
+
+        public void Scroll(double xRatio,double yRatio, int delta)
+        {
+            if (delta == 0)
+            {
+                return;
+            }
+
+            lock (_sync)
+            {
+                MoveToCore(xRatio, yRatio);
+
+                SendMouseEvent(
+                    WheelFlag,
+                    unchecked((uint)delta));
+            }
+        }
+
+        public void ReleaseAll()
+        {
+            lock (_sync)
+            {
+                var errors = new List<Exception>();
+
+                foreach (var button in _pressedButtons.ToArray())
+                {
+                    try
+                    {
+                        var flags = GetButtonFlags(button);
+
+                        SendMouseEvent(flags.Up);
+
+                        _pressedButtons.Remove(button);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add(ex);
+                    }
+                }
+
+                if (errors.Count > 0)
+                {
+                    throw new AggregateException(
+                        "Không thể thả hết các nút chuột đang giữ.",
+                        errors);
+                }
+            }
+        }
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetCursorPos(int x, int y);
@@ -156,6 +222,32 @@ namespace Client.Infrastructure
                     Flags = flags
                 }
             };
+        }
+        private static void SendMouseEvent( uint flags, uint mouseData = 0)
+        {
+            MouseInputPacket[] inputs =
+            {
+        new MouseInputPacket{ Type = InputMouse,Mouse = new MouseInput
+            {
+                Flags = flags,
+                MouseData = mouseData
+            }
+        }
+    };
+
+            uint sent = SendInput(
+                (uint)inputs.Length,
+                inputs,
+                Marshal.SizeOf<MouseInputPacket>());
+
+            if (sent != 1)
+            {
+                int errorCode = Marshal.GetLastWin32Error();
+
+                throw new InvalidOperationException(
+                    $"Không gửi được thao tác chuột. "
+                    + $"Mã lỗi Windows: {errorCode}.");
+            }
         }
     }
 }
