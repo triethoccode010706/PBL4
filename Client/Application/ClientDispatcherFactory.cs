@@ -13,6 +13,7 @@ namespace Client.Application
     IScreenStreamingService streaming,
     IMouseController mouseController,
     IKeyboardController keyboardController,
+    Action releaseInput,
     CancellationToken sessionToken)
         {
             var dispatcher = new CommandDispatcher();
@@ -34,8 +35,7 @@ namespace Client.Application
                     streaming,
                     sessionToken));
 
-            dispatcher.Register(
-                new StopScreenCommandHandler(streaming));
+            dispatcher.Register( new StopScreenCommandHandler( streaming, releaseInput));
             dispatcher.Register(
                 new MouseMoveCommandHandler(mouseController));
 

@@ -23,6 +23,10 @@ namespace Server.Presentation
         private readonly HashSet<MouseButtonType>  _pressedMouseButtons = new();
 
         private (double X, double Y) _lastMousePosition;
+        private bool _allowClose;
+        private bool _stopRequested;
+
+        public event Action? StopRequested;
 
         public event Action<double, double, MouseButtonType, bool>?
             MouseButtonInputSelected;
@@ -140,22 +144,45 @@ namespace Server.Presentation
                 _pendingMousePosition = null;
                 _image.Source = null;
             };
+            Closing += (_, e) =>
+            {
+                if (_allowClose)
+                {
+                    return;
+                }
+
+                e.Cancel = true;
+
+                if (_stopRequested)
+                {
+                    return;
+                }
+
+                _stopRequested = true;
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    StopRequested?.Invoke();
+                }));
+            };
         }
 
-        private void OnImageMouseMove(object sender, MouseEventArgs e)
+        private void OnImageMouseMove(object sender,MouseEventArgs e)
         {
             _pendingMousePosition = null;
 
-            Point point = e.GetPosition(_image);
+            bool isDragging = _pressedMouseButtons.Count > 0;
 
             if (!TryGetImagePosition(
-                point,
+                e.GetPosition(_image),
                 out double xRatio,
-                out double yRatio))
+                out double yRatio,
+                clampToImage: isDragging))
             {
                 return;
             }
 
+            _lastMousePosition = (xRatio, yRatio);
             _pendingMousePosition = (xRatio, yRatio);
         }
         public void UpdateFrame(byte[] jpegBytes)
@@ -488,6 +515,28 @@ namespace Server.Presentation
                     key.Extended,
                     false);
             }
+        }
+        public void BeginStopping()
+        {
+            _stopRequested = true;
+            IsEnabled = false;
+
+            _mouseTimer.Stop();
+            _pendingMousePosition = null;
+
+            _keyboardControl.IsChecked = false;
+            ReleaseMouseButtons();
+        }
+        public void CloseAfterStop()
+        {
+            BeginStopping();
+
+            _allowClose = true;
+            Close();
+        }
+        public void AllowStopRetry()
+        {
+            _stopRequested = false;
         }
     }
 }

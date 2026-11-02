@@ -36,8 +36,8 @@ namespace Client.Application
                     "Chưa cấu hình biến môi trường PBL4_AUTH_KEY.");
             }
 
-            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture,
-                _streaming, _mouseController,_keyboardController,cancellationToken);
+            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture, _streaming,
+                _mouseController,_keyboardController,ReleaseInputState,cancellationToken);
             bool connected = await _tcpClient.ConnectAsync(serverIp, port, cancellationToken);
             if (!connected)
             {

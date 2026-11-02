@@ -1,14 +1,15 @@
-using System.Windows;
-using System.Windows.Controls;
 using Server.Application;
 using Server.Domain;
 using Shared.Models;
-using System.IO;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Collections.Concurrent;
+using System.IO;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 namespace Server.Presentation
 {
     public partial class MainWindow : Window
@@ -30,6 +31,9 @@ namespace Server.Presentation
         private readonly HashSet<string> _inputWorkers = new();
 
         private readonly HashSet<string> _inputFailedSessions = new();
+        private readonly HashSet<string> _stoppingScreens = new();
+
+        private readonly Dictionary<string, Task> _inputTasks = new();
 
 
         public MainWindow(IManagementService management)
@@ -57,6 +61,10 @@ namespace Server.Presentation
 
             var window = new ScreenPreviewWindow(
                 ShortId(sessionId));
+            window.StopRequested += async () =>
+            {
+                await StopScreenAsync(sessionId);
+            };
             window.KeyInputSelected += (code, extended, isDown) =>
             {
                 EnqueueKeyInput(
@@ -298,7 +306,7 @@ namespace Server.Presentation
             _removedSessions.Add(sessionId);
             if (_screenWindows.TryGetValue( sessionId,out var window))
             {
-                window.Close();
+                window.CloseAfterStop();
             }
             object? item = ClientList.Items
                 .Cast<object>()
@@ -326,7 +334,11 @@ namespace Server.Presentation
                 AppendLog("Hãy chọn một Client trước khi gửi lệnh.");
                 return;
             }
-
+            if (_stoppingScreens.Contains(sessionId))
+            {
+                AppendLog("Đang dừng màn hình của Client này.");
+                return;
+            }
             if (CommandCombo.SelectedItem is not ComboBoxItem commandItem
                 || commandItem.Tag is not string commandName
                 || !Enum.TryParse(commandName, ignoreCase: true, out CommandType commandType))
@@ -340,6 +352,11 @@ namespace Server.Presentation
 
             try
             {
+                if (commandType == CommandType.STOP_SCREEN)
+                {
+                    await StopScreenAsync(sessionId);
+                    return;
+                }
                 Response response =await _management.SendCommandAsync(  sessionId, commandType);
                 if (commandType == CommandType.START_SCREEN)
                 {
@@ -434,6 +451,14 @@ namespace Server.Presentation
             _serverRunning = false;
             SendCommandButton.IsEnabled = false;
             StatusText.Text = "Đang dừng Server...";
+            foreach (var window in _screenWindows.Values.ToArray())
+            {
+                window.CloseAfterStop();
+                foreach (var previewWindow in _screenWindows.Values.ToArray())
+                {
+                    previewWindow.CloseAfterStop();
+                }
+            }
 
             try
             {
@@ -495,15 +520,16 @@ namespace Server.Presentation
 
             preview.Show();
         }
-        
+
         private bool CanSendInput(string sessionId)
         {
             return !_isClosing
                 && !_isClosed
                 && _serverRunning
-                && !_removedSessions.Contains(sessionId);
+                && !_removedSessions.Contains(sessionId)
+                && !_stoppingScreens.Contains(sessionId);
         }
-        private void EnqueueKeyInput(
+        void EnqueueKeyInput(
     string sessionId,
     int code,
     bool extended,
@@ -565,6 +591,7 @@ namespace Server.Presentation
             {
                 _inputQueues.Remove(sessionId);
                 _inputWorkers.Remove(sessionId);
+                _inputTasks.Remove(sessionId);
             }
         }
         private async Task TryDisconnectAfterInputErrorAsync(
@@ -636,7 +663,92 @@ namespace Server.Presentation
 
             if (_inputWorkers.Add(sessionId))
             {
-                _ = ProcessInputQueueAsync(sessionId);
+                Task task = ProcessInputQueueAsync(sessionId);
+
+                if (!task.IsCompleted)
+                {
+                    _inputTasks[sessionId] = task;
+                }
+            }
+        }
+        private async Task StopScreenAsync(string sessionId)
+        {
+            if (_isClosing || _isClosed || !_serverRunning ||
+                _removedSessions.Contains(sessionId))
+            {
+                if (_screenWindows.TryGetValue(sessionId, out var closedWindow))
+                {
+                    closedWindow.CloseAfterStop();
+                }
+
+                return;
+            }
+
+            if (!_stoppingScreens.Add(sessionId))
+            {
+                return;
+            }
+
+            try
+            {
+                if (_screenWindows.TryGetValue(sessionId, out var window))
+                {
+                    window.BeginStopping();
+                }
+
+                if (_inputQueues.TryGetValue(sessionId, out var queue))
+                {
+                    queue.Clear();
+                }
+
+                if (_inputTasks.TryGetValue(sessionId, out Task? inputTask))
+                {
+                    await inputTask;
+                }
+
+                if (_removedSessions.Contains(sessionId))
+                {
+                    return;
+                }
+
+                using var deadline = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(5));
+
+                Response response = await _management.SendCommandAsync(
+                    sessionId,
+                    CommandType.STOP_SCREEN,
+                    deadline.Token);
+
+                if (!response.Success)
+                {
+                    throw new InvalidOperationException(response.Message);
+                }
+
+                // Client đã xác nhận giải phóng trạng thái input.
+                _inputFailedSessions.Remove(sessionId);
+
+                if (_screenWindows.TryGetValue(sessionId, out var preview))
+                {
+                    preview.CloseAfterStop();
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Không hoàn tất được việc dừng màn hình: "
+                        + ex.Message);
+                }
+
+                if (_screenWindows.TryGetValue(sessionId, out var window))
+                {
+                    window.AllowStopRetry();
+                }
+            }
+            finally
+            {
+                _stoppingScreens.Remove(sessionId);
             }
         }
 
