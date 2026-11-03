@@ -62,18 +62,17 @@ class Program
             new ScreenStreamingService(
                 screenCapture,
                 frameSender);
-
-        IClientAgent agent = new ClientAgent(
-            tcpClient,
-            new MachineInfoProvider(),
-            screenCapture,
-            streaming);
+        IMouseController mouseController = new MouseController();
+        IKeyboardController keyboardController = new KeyboardController();
+        IClientAgent agent = new ClientAgent( tcpClient,new MachineInfoProvider(),screenCapture, streaming,mouseController,keyboardController);
 
         agent.Log += Console.WriteLine;
 
         try
         {
-            await agent.RunAsync("127.0.0.1", 5000, cts.Token);
+            string serverIp = args.Length > 0? args[0] : "127.0.0.1";
+
+            await agent.RunAsync(serverIp, 5000, cts.Token);
         }
         catch (OperationCanceledException)
         {

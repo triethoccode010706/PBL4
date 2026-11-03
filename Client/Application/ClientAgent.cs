@@ -9,16 +9,20 @@ namespace Client.Application
         private readonly IMachineInfoProvider _machineInfoProvider;
         private readonly IScreenCapture _screenCapture;
         private readonly IScreenStreamingService _streaming;
+        private readonly IMouseController _mouseController;
+        private readonly IKeyboardController _keyboardController;
         public event Action<string>? Log;
 
-        public ClientAgent(ITcpClient tcpClient,IMachineInfoProvider machineInfoProvider,IScreenCapture screenCapture,IScreenStreamingService streaming)
+        public ClientAgent(ITcpClient tcpClient,IMachineInfoProvider machineInfoProvider,IScreenCapture screenCapture,
+            IScreenStreamingService streaming,IMouseController mouseController, IKeyboardController keyboardController)
         {
             _tcpClient = tcpClient;
             _machineInfoProvider = machineInfoProvider;
             _screenCapture = screenCapture;
             _streaming = streaming;
+            _mouseController = mouseController;
+            _keyboardController = keyboardController;
         }
-
         public async Task RunAsync(
             string serverIp,
             int port,
@@ -32,7 +36,8 @@ namespace Client.Application
                     "Chưa cấu hình biến môi trường PBL4_AUTH_KEY.");
             }
 
-            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture, _streaming, cancellationToken);
+            var dispatcher = ClientDispatcherFactory.Create( _machineInfoProvider, secretKey, _screenCapture, _streaming,
+                _mouseController,_keyboardController,ReleaseInputState,cancellationToken);
             bool connected = await _tcpClient.ConnectAsync(serverIp, port, cancellationToken);
             if (!connected)
             {
@@ -67,11 +72,37 @@ namespace Client.Application
             {
                 try
                 {
-                    await _streaming.StopAsync();
+                    _keyboardController.ReleaseAll();
+                }
+                catch (Exception ex)
+                {
+                    WriteLog(
+                        "Không thể thả hết phím khi kết thúc phiên: "
+                        + ex.Message);
                 }
                 finally
                 {
-                    _tcpClient.Disconnect();
+                    try
+                    {
+                        ReleaseInputState();
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteLog(
+                            "Lỗi khi giải phóng chuột/bàn phím: "
+                            + ex.Message);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            await _streaming.StopAsync();
+                        }
+                        finally
+                        {
+                            _tcpClient.Disconnect();
+                        }
+                    }
                 }
             }
         }
@@ -79,6 +110,35 @@ namespace Client.Application
         private void WriteLog(string message)
         {
             Log?.Invoke(message);
+        }
+        private void ReleaseInputState()
+        {
+            var errors = new List<Exception>();
+
+            try
+            {
+                _mouseController.ReleaseAll();
+            }
+            catch (Exception ex)
+            {
+                errors.Add(ex);
+            }
+
+            try
+            {
+                _keyboardController.ReleaseAll();
+            }
+            catch (Exception ex)
+            {
+                errors.Add(ex);
+            }
+
+            if (errors.Count > 0)
+            {
+                throw new AggregateException(
+                    "Không thể giải phóng hết trạng thái điều khiển.",
+                    errors);
+            }
         }
     }
 }

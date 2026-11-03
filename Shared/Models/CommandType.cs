@@ -12,6 +12,9 @@ namespace Shared.Models
         KEY_UP = 8,
         DISCONNECT = 9,
         AUTHENTICATE = 10,
-        CAPTURE_SCREEN = 11
+        CAPTURE_SCREEN = 11,
+        MOUSE_DOWN,
+        MOUSE_UP,
+        MOUSE_WHEEL
     }
 }

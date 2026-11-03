@@ -1,12 +1,15 @@
-using System.Windows;
-using System.Windows.Controls;
 using Server.Application;
 using Server.Domain;
 using Shared.Models;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Collections.Concurrent;
 namespace Server.Presentation
 {
     public partial class MainWindow : Window
@@ -18,9 +21,21 @@ namespace Server.Presentation
         private bool _isClosed;
         private readonly HashSet<string> _removedSessions = new();
         private bool _serverRunning;
+      
+        
         private readonly Dictionary<string, ScreenPreviewWindow> _screenWindows = new();
 
         private readonly ConcurrentDictionary<string, byte>  _pendingFrameUpdates = new();
+        private readonly Dictionary< string,LinkedList<(CommandType Type, string Data)>> _inputQueues = new();
+
+        private readonly HashSet<string> _inputWorkers = new();
+
+        private readonly HashSet<string> _inputFailedSessions = new();
+        private readonly HashSet<string> _stoppingScreens = new();
+
+        private readonly Dictionary<string, Task> _inputTasks = new();
+
+
         public MainWindow(IManagementService management)
         {
             _management = management;
@@ -33,7 +48,8 @@ namespace Server.Presentation
             _management.Start();
             Closing += OnClosing;
         }
-            private void OpenScreenPreview(string sessionId)
+        
+        private void OpenScreenPreview(string sessionId)
         {
             if (_screenWindows.TryGetValue(
                 sessionId,
@@ -45,6 +61,64 @@ namespace Server.Presentation
 
             var window = new ScreenPreviewWindow(
                 ShortId(sessionId));
+            window.StopRequested += async () =>
+            {
+                await StopScreenAsync(sessionId);
+            };
+            window.KeyInputSelected += (code, extended, isDown) =>
+            {
+                EnqueueKeyInput(
+                    sessionId,
+                    code,
+                    extended,
+                    isDown);
+            };
+            window.MousePositionSelected += (xRatio, yRatio) =>
+            {
+                var input = new MouseMoveDto
+                {
+                    XRatio = xRatio,
+                    YRatio = yRatio
+                };
+
+                EnqueueInput(
+                    sessionId,
+                    CommandType.MOUSE_MOVE,
+                    JsonSerializer.Serialize(input));
+            };
+            window.MouseButtonInputSelected +=
+    (xRatio, yRatio, button, isDown) =>
+    {
+        var input = new MouseClickDto
+        {
+            XRatio = xRatio,
+            YRatio = yRatio,
+            Button = button
+        };
+
+        CommandType commandType = isDown
+            ? CommandType.MOUSE_DOWN
+            : CommandType.MOUSE_UP;
+
+        EnqueueInput(
+            sessionId,
+            commandType,
+            JsonSerializer.Serialize(input));
+    };
+            window.MouseWheelSelected += (xRatio, yRatio, delta) =>
+            {
+                var input = new MouseWheelDto
+                {
+                    XRatio = xRatio,
+                    YRatio = yRatio,
+                    Delta = delta
+                };
+
+                EnqueueInput(
+                    sessionId,
+                    CommandType.MOUSE_WHEEL,
+                    JsonSerializer.Serialize(input));
+            };
 
             window.Owner = this;
 
@@ -232,7 +306,7 @@ namespace Server.Presentation
             _removedSessions.Add(sessionId);
             if (_screenWindows.TryGetValue( sessionId,out var window))
             {
-                window.Close();
+                window.CloseAfterStop();
             }
             object? item = ClientList.Items
                 .Cast<object>()
@@ -260,7 +334,11 @@ namespace Server.Presentation
                 AppendLog("Hãy chọn một Client trước khi gửi lệnh.");
                 return;
             }
-
+            if (_stoppingScreens.Contains(sessionId))
+            {
+                AppendLog("Đang dừng màn hình của Client này.");
+                return;
+            }
             if (CommandCombo.SelectedItem is not ComboBoxItem commandItem
                 || commandItem.Tag is not string commandName
                 || !Enum.TryParse(commandName, ignoreCase: true, out CommandType commandType))
@@ -274,6 +352,11 @@ namespace Server.Presentation
 
             try
             {
+                if (commandType == CommandType.STOP_SCREEN)
+                {
+                    await StopScreenAsync(sessionId);
+                    return;
+                }
                 Response response =await _management.SendCommandAsync(  sessionId, commandType);
                 if (commandType == CommandType.START_SCREEN)
                 {
@@ -368,6 +451,14 @@ namespace Server.Presentation
             _serverRunning = false;
             SendCommandButton.IsEnabled = false;
             StatusText.Text = "Đang dừng Server...";
+            foreach (var window in _screenWindows.Values.ToArray())
+            {
+                window.CloseAfterStop();
+                foreach (var previewWindow in _screenWindows.Values.ToArray())
+                {
+                    previewWindow.CloseAfterStop();
+                }
+            }
 
             try
             {
@@ -429,5 +520,237 @@ namespace Server.Presentation
 
             preview.Show();
         }
+
+        private bool CanSendInput(string sessionId)
+        {
+            return !_isClosing
+                && !_isClosed
+                && _serverRunning
+                && !_removedSessions.Contains(sessionId)
+                && !_stoppingScreens.Contains(sessionId);
+        }
+        void EnqueueKeyInput(
+    string sessionId,
+    int code,
+    bool extended,
+    bool isDown)
+        {
+            var input = new KeyInputDto
+            {
+                VirtualKeyCode = code,
+                IsExtended = extended
+            };
+
+            CommandType commandType = isDown
+                ? CommandType.KEY_DOWN
+                : CommandType.KEY_UP;
+
+            EnqueueInput(
+                sessionId,
+                commandType,
+                JsonSerializer.Serialize(input));
+        }
+        private async Task ProcessInputQueueAsync(string sessionId)
+        {
+            try
+            {
+                while (CanSendInput(sessionId) &&
+                       _inputQueues.TryGetValue(sessionId, out var queue) &&
+                       queue.First != null)
+                {
+                    var item = queue.First.Value;
+                    queue.RemoveFirst();
+
+                    Response response =
+                        await _management.SendCommandAsync(
+                            sessionId,
+                            item.Type,
+                            item.Data);
+
+                    if (!response.Success)
+                    {
+                        throw new InvalidOperationException(
+                            response.Message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _inputFailedSessions.Add(sessionId);
+
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Dừng điều khiển phiên vì lỗi: "
+                        + ex.Message);
+                }
+
+                await TryDisconnectAfterInputErrorAsync(sessionId);
+            }
+            finally
+            {
+                _inputQueues.Remove(sessionId);
+                _inputWorkers.Remove(sessionId);
+                _inputTasks.Remove(sessionId);
+            }
+        }
+        private async Task TryDisconnectAfterInputErrorAsync(
+    string sessionId)
+        {
+            if (!CanSendInput(sessionId))
+            {
+                return;
+            }
+
+            try
+            {
+                using var deadline = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(3));
+
+                Response response =
+                    await _management.SendCommandAsync(
+                        sessionId,
+                        CommandType.DISCONNECT,
+                        deadline.Token);
+
+                if (!response.Success && !_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Client chưa xác nhận ngắt phiên: "
+                        + response.Message);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Không gửi được yêu cầu ngắt phiên: "
+                        + ex.Message);
+                }
+            }
+        }
+       
+        private void EnqueueInput(
+    string sessionId,
+    CommandType commandType,
+    string data)
+        {
+            if (!CanSendInput(sessionId) ||
+                _inputFailedSessions.Contains(sessionId))
+            {
+                return;
+            }
+
+            if (!_inputQueues.TryGetValue(sessionId, out var queue))
+            {
+                queue = new LinkedList<(CommandType Type, string Data)>();
+                _inputQueues.Add(sessionId, queue);
+            }
+
+            var last = queue.Last;
+
+            if (commandType == CommandType.MOUSE_MOVE &&
+                last != null &&
+                last.Value.Type == CommandType.MOUSE_MOVE)
+            {
+                last.Value = (commandType, data);
+            }
+            else
+            {
+                queue.AddLast((commandType, data));
+            }
+
+            if (_inputWorkers.Add(sessionId))
+            {
+                Task task = ProcessInputQueueAsync(sessionId);
+
+                if (!task.IsCompleted)
+                {
+                    _inputTasks[sessionId] = task;
+                }
+            }
+        }
+        private async Task StopScreenAsync(string sessionId)
+        {
+            if (_isClosing || _isClosed || !_serverRunning ||
+                _removedSessions.Contains(sessionId))
+            {
+                if (_screenWindows.TryGetValue(sessionId, out var closedWindow))
+                {
+                    closedWindow.CloseAfterStop();
+                }
+
+                return;
+            }
+
+            if (!_stoppingScreens.Add(sessionId))
+            {
+                return;
+            }
+
+            try
+            {
+                if (_screenWindows.TryGetValue(sessionId, out var window))
+                {
+                    window.BeginStopping();
+                }
+
+                if (_inputQueues.TryGetValue(sessionId, out var queue))
+                {
+                    queue.Clear();
+                }
+
+                if (_inputTasks.TryGetValue(sessionId, out Task? inputTask))
+                {
+                    await inputTask;
+                }
+
+                if (_removedSessions.Contains(sessionId))
+                {
+                    return;
+                }
+
+                using var deadline = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(5));
+
+                Response response = await _management.SendCommandAsync(
+                    sessionId,
+                    CommandType.STOP_SCREEN,
+                    deadline.Token);
+
+                if (!response.Success)
+                {
+                    throw new InvalidOperationException(response.Message);
+                }
+
+                // Client đã xác nhận giải phóng trạng thái input.
+                _inputFailedSessions.Remove(sessionId);
+
+                if (_screenWindows.TryGetValue(sessionId, out var preview))
+                {
+                    preview.CloseAfterStop();
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_isClosing && !_isClosed)
+                {
+                    AppendLog(
+                        "Không hoàn tất được việc dừng màn hình: "
+                        + ex.Message);
+                }
+
+                if (_screenWindows.TryGetValue(sessionId, out var window))
+                {
+                    window.AllowStopRetry();
+                }
+            }
+            finally
+            {
+                _stoppingScreens.Remove(sessionId);
+            }
+        }
+
     }
 }
